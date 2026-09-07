@@ -2,7 +2,7 @@ services:
   - type: worker
     name: otchet-bot
     runtime: python
-    plan: starter
+    plan: 0.5c-512mb
     region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
