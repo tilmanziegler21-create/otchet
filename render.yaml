@@ -1,0 +1,26 @@
+services:
+  - type: worker
+    name: otchet-bot
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    autoDeployTrigger: commit
+    disk:
+      name: otchet-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      # Значения задаются в дашборде Render, в репозиторий не попадают.
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      # База лежит на постоянном диске, иначе отчеты пропадут при деплое.
+      - key: DB_PATH
+        value: /var/data/bot.db
+      - key: TAX_RATE
+        value: "0.30"
+      - key: CURRENCY
+        value: "€"
