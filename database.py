@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     salary_value_snapshot REAL    NOT NULL DEFAULT 0,
     bonus_snapshot        REAL    NOT NULL DEFAULT 0,
     plan_snapshot         REAL    NOT NULL DEFAULT 0,
+    touches               INTEGER NOT NULL DEFAULT 0,
+    replies               INTEGER NOT NULL DEFAULT 0,
+    purchases             INTEGER NOT NULL DEFAULT 0,
+    extra_revenue         REAL    NOT NULL DEFAULT 0,
     created_at            TEXT    NOT NULL
 );
 
@@ -124,6 +128,10 @@ class Report:
     salary_value: float
     bonus: float
     plan: float
+    touches: int
+    replies: int
+    purchases: int
+    extra_revenue: float
     created_at: str
     items: tuple[ReportItem, ...]
 
@@ -176,6 +184,17 @@ async def _migrate(db: aiosqlite.Connection) -> None:
             "ALTER TABLE daily_reports ADD COLUMN plan_snapshot REAL "
             "NOT NULL DEFAULT 0"
         )
+    for column, kind in (
+        ("touches", "INTEGER"),
+        ("replies", "INTEGER"),
+        ("purchases", "INTEGER"),
+        ("extra_revenue", "REAL"),
+    ):
+        if column not in reports:
+            await db.execute(
+                f"ALTER TABLE daily_reports ADD COLUMN {column} {kind} "
+                "NOT NULL DEFAULT 0"
+            )
 
     cities = await _columns(db, "cities")
     if "salary_kind" not in cities:
@@ -441,6 +460,10 @@ async def save_report(
     bonus: float,
     plan: float,
     items: Sequence[tuple[int, int, float, float]],
+    touches: int = 0,
+    replies: int = 0,
+    purchases: int = 0,
+    extra_revenue: float = 0.0,
 ) -> int:
     """items: (category_id, quantity, revenue, purchase_price_snapshot)."""
     async with _connect() as db:
@@ -449,8 +472,9 @@ async def save_report(
             "INSERT INTO daily_reports "
             "(date, city_id, employee_telegram_id, customers_count, "
             " salary_kind_snapshot, salary_value_snapshot, bonus_snapshot, "
-            " plan_snapshot, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " plan_snapshot, touches, replies, purchases, extra_revenue, "
+            " created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 report_date,
                 city_id,
@@ -460,6 +484,10 @@ async def save_report(
                 float(salary_value),
                 float(bonus),
                 float(plan),
+                int(touches),
+                int(replies),
+                int(purchases),
+                float(extra_revenue),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -509,6 +537,10 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
         salary_value=float(row["salary_value_snapshot"] or 0),
         bonus=float(row["bonus_snapshot"] or 0),
         plan=float(row["plan_snapshot"] or 0),
+        touches=int(row["touches"] or 0),
+        replies=int(row["replies"] or 0),
+        purchases=int(row["purchases"] or 0),
+        extra_revenue=float(row["extra_revenue"] or 0),
         created_at=row["created_at"],
         items=items,
     )
@@ -518,7 +550,8 @@ _REPORT_SELECT = (
     "SELECT r.id, r.date, r.city_id, ci.name AS city_name, "
     "       r.employee_telegram_id, r.customers_count, "
     "       r.salary_kind_snapshot, r.salary_value_snapshot, "
-    "       r.bonus_snapshot, r.plan_snapshot, r.created_at "
+    "       r.bonus_snapshot, r.plan_snapshot, "
+    "       r.touches, r.replies, r.purchases, r.extra_revenue, r.created_at "
     "FROM daily_reports AS r "
     "LEFT JOIN cities AS ci ON ci.id = r.city_id "
 )

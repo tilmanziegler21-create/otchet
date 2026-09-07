@@ -21,6 +21,7 @@ from keyboards.employee import (
     CB_EDIT_CATEGORY,
     CB_EDIT_CITY,
     CB_EDIT_CUSTOMERS,
+    CB_EDIT_OUTREACH,
     cancel_menu,
     cities_menu,
     date_menu,
@@ -44,6 +45,10 @@ class NewReport(StatesGroup):
     waiting_quantity = State()
     waiting_revenue = State()
     waiting_customers = State()
+    waiting_touches = State()
+    waiting_replies = State()
+    waiting_purchases = State()
+    waiting_extra_revenue = State()
     preview = State()
     choose_edit = State()
 
@@ -113,6 +118,41 @@ async def _ask_customers(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _ask_touches(message: Message, state: FSMContext) -> None:
+    await state.set_state(NewReport.waiting_touches)
+    await message.answer(
+        "Сколько было рассылок (касаний) за день?\n\n"
+        "Если рассылок не было — отправьте 0.",
+        reply_markup=cancel_menu(),
+    )
+
+
+async def _ask_replies(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await state.set_state(NewReport.waiting_replies)
+    await message.answer(
+        f"Касаний — {data['touches']}.\n\nСколько из них ответили?",
+        reply_markup=cancel_menu(),
+    )
+
+
+async def _ask_purchases(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await state.set_state(NewReport.waiting_purchases)
+    await message.answer(
+        f"Ответили — {data['replies']}.\n\nСколько из них перешли к покупке?",
+        reply_markup=cancel_menu(),
+    )
+
+
+async def _ask_extra_revenue(message: Message, state: FSMContext) -> None:
+    await state.set_state(NewReport.waiting_extra_revenue)
+    await message.answer(
+        f"Какой доп оборот создали рассылки (в {config.currency})?",
+        reply_markup=cancel_menu(),
+    )
+
+
 async def _next_step(message: Message, state: FSMContext) -> None:
     """Категория заполнена: следующая категория, покупатели или предпросмотр."""
     data = await state.get_data()
@@ -143,6 +183,12 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
         rows,
         int(data["customers_count"]),
         city_name=data.get("city_name"),
+        outreach=(
+            int(data.get("touches", 0)),
+            int(data.get("replies", 0)),
+            int(data.get("purchases", 0)),
+            float(data.get("extra_revenue", 0.0)),
+        ),
     )
     await state.set_state(NewReport.preview)
     await message.answer(text, reply_markup=preview_menu())
@@ -284,6 +330,89 @@ async def process_customers(message: Message, state: FSMContext) -> None:
         )
         return
     await state.update_data(customers_count=customers)
+    data = await state.get_data()
+    if data.get("edit_target"):
+        await _show_preview(message, state)
+        return
+    await _ask_touches(message, state)
+
+
+@router.message(NewReport.waiting_touches, F.text)
+async def process_touches(message: Message, state: FSMContext) -> None:
+    touches = parse_int(message.text)
+    if touches is None:
+        await message.answer(
+            "Нужно целое число касаний (например 120). Попробуйте еще раз:",
+            reply_markup=cancel_menu(),
+        )
+        return
+
+    if touches == 0:
+        # Рассылок не было — остальные вопросы не задаем.
+        await state.update_data(
+            touches=0, replies=0, purchases=0, extra_revenue=0.0
+        )
+        await message.answer("Рассылок не было, остальное не спрашиваю.")
+        await _show_preview(message, state)
+        return
+
+    await state.update_data(touches=touches)
+    await _ask_replies(message, state)
+
+
+@router.message(NewReport.waiting_replies, F.text)
+async def process_replies(message: Message, state: FSMContext) -> None:
+    replies = parse_int(message.text)
+    if replies is None:
+        await message.answer(
+            "Нужно целое число ответивших (например 30). Попробуйте еще раз:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    data = await state.get_data()
+    if replies > int(data["touches"]):
+        await message.answer(
+            f"Ответивших не может быть больше касаний ({data['touches']}). "
+            "Введите число заново:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    await state.update_data(replies=replies)
+    await _ask_purchases(message, state)
+
+
+@router.message(NewReport.waiting_purchases, F.text)
+async def process_purchases(message: Message, state: FSMContext) -> None:
+    purchases = parse_int(message.text)
+    if purchases is None:
+        await message.answer(
+            "Нужно целое число покупок (например 12). Попробуйте еще раз:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    data = await state.get_data()
+    if purchases > int(data["replies"]):
+        await message.answer(
+            f"Покупок не может быть больше ответивших ({data['replies']}). "
+            "Введите число заново:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    await state.update_data(purchases=purchases)
+    await _ask_extra_revenue(message, state)
+
+
+@router.message(NewReport.waiting_extra_revenue, F.text)
+async def process_extra_revenue(message: Message, state: FSMContext) -> None:
+    extra_revenue = parse_amount(message.text)
+    if extra_revenue is None:
+        await message.answer(
+            "Нужна сумма доп оборота (например 340 или 340,50). "
+            "Попробуйте еще раз:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    await state.update_data(extra_revenue=extra_revenue)
     await _show_preview(message, state)
 
 
@@ -302,6 +431,10 @@ async def confirm_report(
     report_date = data["date"]
     customers_count = int(data["customers_count"])
     entries = data["entries"]
+    touches = int(data.get("touches", 0))
+    replies = int(data.get("replies", 0))
+    purchases = int(data.get("purchases", 0))
+    extra_revenue = float(data.get("extra_revenue", 0.0))
 
     items: list[tuple[int, int, float, float]] = []
     lines: list[CategoryLine] = []
@@ -346,6 +479,10 @@ async def confirm_report(
         bonus=bonus_context.bonus,
         plan=bonus_context.plan,
         items=items,
+        touches=touches,
+        replies=replies,
+        purchases=purchases,
+        extra_revenue=extra_revenue,
     )
     summary = build_summary(
         report_date=dates.from_db(report_date),
@@ -357,6 +494,10 @@ async def confirm_report(
         bonus=bonus_context.bonus,
         plan=bonus_context.plan,
         month_revenue=bonus_context.month_revenue,
+        touches=touches,
+        replies=replies,
+        purchases=purchases,
+        extra_revenue=extra_revenue,
         report_id=report_id,
         employee_telegram_id=callback.from_user.id,
     )
@@ -428,6 +569,15 @@ async def edit_customers(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(NewReport.choose_edit, F.data == CB_EDIT_OUTREACH)
+async def edit_outreach(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(edit_target="outreach")
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await _ask_touches(callback.message, state)
+    await callback.answer()
+
+
 @router.callback_query(NewReport.choose_edit, F.data == CB_BACK)
 async def back_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is not None:
@@ -443,6 +593,10 @@ async def back_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(NewReport.waiting_quantity)
 @router.message(NewReport.waiting_revenue)
 @router.message(NewReport.waiting_customers)
+@router.message(NewReport.waiting_touches)
+@router.message(NewReport.waiting_replies)
+@router.message(NewReport.waiting_purchases)
+@router.message(NewReport.waiting_extra_revenue)
 async def wrong_input_type(message: Message) -> None:
     await message.answer("Отправьте ответ текстом или нажмите «❌ Отмена».")
 

@@ -49,6 +49,7 @@ def _category_blocks(summary: SummaryTotals) -> list[str]:
         f"Количество — {format_quantity(line.quantity)}\n"
         f"Выручка — {format_money(line.revenue)}\n"
         f"Средний чек — {format_money(line.average_check)}\n"
+        f"UPD — {format_upd(summary.category_upd(line))}\n"
         f"Себестоимость — {format_money(line.cost)}\n"
         f"Чистая прибыль — {format_money(summary.category_profit(line))}"
         for line in summary.lines
@@ -63,7 +64,37 @@ def _category_blocks(summary: SummaryTotals) -> list[str]:
         f"Количество покупателей — {summary.customers_count}\n"
         f"UPD — {format_upd(summary.upd)}"
     )
+    parts.append(_outreach_block(summary))
     return parts
+
+
+def _outreach_block(summary: SummaryTotals) -> str:
+    """Рассылки: касания, ответы, покупки, доп оборот и конверсии."""
+    if not summary.touches:
+        return "<b>РАССЫЛКИ:</b>\n\nРассылок не было."
+    return (
+        "<b>РАССЫЛКИ:</b>\n\n"
+        f"Касаний — {summary.touches}\n"
+        f"Ответили — {summary.replies} "
+        f"({format_amount(summary.reply_rate, 2)}% от касаний)\n"
+        f"Перешли к покупке — {summary.purchases} "
+        f"({format_amount(summary.purchase_rate, 2)}% от ответивших)\n"
+        f"Доп оборот — {format_money(summary.extra_revenue)} "
+        "(уже в общей выручке)"
+    )
+
+
+def _outreach_line(summary: SummaryTotals) -> str:
+    """Одна строка о рассылках — для безопасных сводок работника."""
+    if not summary.touches:
+        return "Рассылки: не было"
+    return (
+        f"Рассылки: касаний {summary.touches}, "
+        f"ответили {summary.replies} ({format_amount(summary.reply_rate, 2)}%), "
+        f"покупки {summary.purchases} "
+        f"({format_amount(summary.purchase_rate, 2)}%), "
+        f"доп оборот {format_money(summary.extra_revenue)}"
+    )
 
 
 def render_full_report(summary: ReportSummary, employee_label: str | None = None) -> str:
@@ -156,12 +187,25 @@ def render_period_report(summary: PeriodSummary) -> str:
 
 def render_employee_result(summary: ReportSummary) -> str:
     """Безопасная версия для работника — без закупок, себестоимости и прибыли."""
-    return (
-        f"Отчет за {_header(summary.report_date, summary.city_name)} сохранен ✅\n\n"
-        f"Продано жидкостей: {summary.liquid_quantity}\n"
-        f"UPD: {format_upd(summary.upd)}\n"
-        f"Общая выручка: {format_money(summary.total_revenue)}"
+    lines = [
+        f"Отчет за {_header(summary.report_date, summary.city_name)} сохранен ✅",
+        "",
+    ]
+    for line in summary.lines:
+        lines.append(
+            f"{escape(line.name)} — {format_quantity(line.quantity)} / "
+            f"UPD {format_upd(summary.category_upd(line))}"
+        )
+    lines.extend(
+        [
+            "",
+            f"Продано жидкостей: {summary.liquid_quantity}",
+            f"UPD: {format_upd(summary.upd)}",
+            f"Общая выручка: {format_money(summary.total_revenue)}",
+            _outreach_line(summary),
+        ]
     )
+    return "\n".join(lines)
 
 
 def render_employee_summary(summary: ReportSummary) -> str:
@@ -171,7 +215,8 @@ def render_employee_summary(summary: ReportSummary) -> str:
     for line in summary.lines:
         lines.append(
             f"{escape(line.name)} — {format_quantity(line.quantity)} / "
-            f"{format_money(line.revenue)}"
+            f"{format_money(line.revenue)} / "
+            f"UPD {format_upd(summary.category_upd(line))}"
         )
     lines.extend(
         [
@@ -180,6 +225,7 @@ def render_employee_summary(summary: ReportSummary) -> str:
             f"Покупателей: {summary.customers_count}",
             f"UPD: {format_upd(summary.upd)}",
             f"Общая выручка: {format_money(summary.total_revenue)}",
+            _outreach_line(summary),
         ]
     )
     return "\n".join(lines)
@@ -190,6 +236,7 @@ def render_preview(
     rows: Sequence[tuple[str, int, float]],
     customers_count: int,
     city_name: str | None = None,
+    outreach: tuple[int, int, int, float] | None = None,
 ) -> str:
     """Предпросмотр перед сохранением (данные работника, без экономики)."""
     header = _header(report_date, city_name, full_date=True)
@@ -200,6 +247,15 @@ def render_preview(
         )
     lines.append("")
     lines.append(f"Покупателей — {customers_count}")
+    if outreach is not None:
+        touches, replies, purchases, extra_revenue = outreach
+        if touches:
+            lines.append(
+                f"Рассылки — {touches} касаний / {replies} ответили / "
+                f"{purchases} покупок / доп оборот {format_money(extra_revenue)}"
+            )
+        else:
+            lines.append("Рассылки — не было")
     return "\n".join(lines)
 
 

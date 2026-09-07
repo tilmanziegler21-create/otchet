@@ -28,6 +28,7 @@ CB_CITY = "report:city:"
 CB_EDIT_CATEGORY = "report:edit:cat:"
 CB_EDIT_CUSTOMERS = "report:edit:customers"
 CB_EDIT_CITY = "report:edit:city"
+CB_EDIT_OUTREACH = "report:edit:outreach"
 CB_EMPLOYEE_REPORT = "emp:report:"
 
 
@@ -95,6 +96,9 @@ def edit_menu(names: Sequence[str]) -> InlineKeyboardMarkup:
     ]
     rows.append(
         [InlineKeyboardButton(text="👥 Покупателей", callback_data=CB_EDIT_CUSTOMERS)]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="📨 Рассылки", callback_data=CB_EDIT_OUTREACH)]
     )
     rows.append([InlineKeyboardButton(text="🏙 Город", callback_data=CB_EDIT_CITY)])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_BACK)])

@@ -97,11 +97,18 @@ def calculate_average_check(revenue: float, quantity: int) -> float:
     return float(revenue) / int(quantity)
 
 
-def calculate_upd(liquid_quantity: int, customers_count: int) -> float:
-    """UPD = проданные жидкости / покупатели."""
+def calculate_upd(quantity: int, customers_count: int) -> float:
+    """UPD = проданные штуки / покупатели (по жидкостям или по бренду)."""
     if not customers_count:
         return 0.0
-    return round(int(liquid_quantity) / int(customers_count), 2)
+    return round(int(quantity) / int(customers_count), 2)
+
+
+def calculate_rate(part: int, whole: int) -> float:
+    """Конверсия в процентах: ответившие от касаний, покупки от ответов."""
+    if not whole:
+        return 0.0
+    return int(part) / int(whole) * 100
 
 
 @dataclass(frozen=True)
@@ -127,7 +134,7 @@ class SummaryTotals:
     """Итоги, одинаковые для отчета за день и за период.
 
     Наследник обязан дать `lines`, `customers_count`, `manager_amount`,
-    `salary_amount` и `bonus` — остальное считается отсюда.
+    `salary_amount`, `bonus` и цифры рассылок — остальное считается отсюда.
     """
 
     # ---------------------------------------------------------- общие итоги
@@ -179,6 +186,21 @@ class SummaryTotals:
         """Прибыль категории пропорционально ее выручке и себестоимости."""
         return line.revenue - self.category_deductions(line) - line.cost
 
+    def category_upd(self, line: CategoryLine) -> float:
+        """UPD бренда — сколько его штук на одного покупателя."""
+        return calculate_upd(line.quantity, self.customers_count)
+
+    # ------------------------------------------------------------- рассылки
+    @property
+    def reply_rate(self) -> float:
+        """Сколько процентов касаний ответили."""
+        return calculate_rate(self.replies, self.touches)
+
+    @property
+    def purchase_rate(self) -> float:
+        """Сколько процентов ответивших перешли к покупке."""
+        return calculate_rate(self.purchases, self.replies)
+
     # ------------------------------------------------------------- жидкости
     @property
     def liquid_lines(self) -> tuple[CategoryLine, ...]:
@@ -212,6 +234,10 @@ class ReportSummary(SummaryTotals):
     bonus: float = 0.0
     plan: float = 0.0
     month_revenue: float = 0.0
+    touches: int = 0
+    replies: int = 0
+    purchases: int = 0
+    extra_revenue: float = 0.0
     report_id: int | None = None
     employee_telegram_id: int | None = None
 
@@ -236,6 +262,10 @@ def build_summary(
     bonus: float = 0.0,
     plan: float = 0.0,
     month_revenue: float = 0.0,
+    touches: int = 0,
+    replies: int = 0,
+    purchases: int = 0,
+    extra_revenue: float = 0.0,
     report_id: int | None = None,
     employee_telegram_id: int | None = None,
 ) -> ReportSummary:
@@ -249,6 +279,10 @@ def build_summary(
         bonus=bonus,
         plan=plan,
         month_revenue=month_revenue,
+        touches=touches,
+        replies=replies,
+        purchases=purchases,
+        extra_revenue=extra_revenue,
         report_id=report_id,
         employee_telegram_id=employee_telegram_id,
     )
@@ -294,6 +328,10 @@ class PeriodSummary(SummaryTotals):
     customers_count: int
     salary_amount: float
     bonus: float
+    touches: int = 0
+    replies: int = 0
+    purchases: int = 0
+    extra_revenue: float = 0.0
     city_name: str | None = None
     salary_rate: tuple[str, float] | None = None
 
@@ -381,6 +419,10 @@ def build_period_summary(
         customers_count=sum(day["customers"] for day in days.values()),
         salary_amount=salary_amount,
         bonus=bonus,
+        touches=sum(report.touches for report in reports),
+        replies=sum(report.replies for report in reports),
+        purchases=sum(report.purchases for report in reports),
+        extra_revenue=sum(report.extra_revenue for report in reports),
         city_name=city_name,
         salary_rate=rates.pop() if len(rates) == 1 else None,
     )
@@ -409,6 +451,10 @@ def summary_from_report(report: Report, month_revenue: float = 0.0) -> ReportSum
         bonus=report.bonus,
         plan=report.plan,
         month_revenue=month_revenue,
+        touches=report.touches,
+        replies=report.replies,
+        purchases=report.purchases,
+        extra_revenue=report.extra_revenue,
         report_id=report.id,
         employee_telegram_id=report.employee_telegram_id,
     )
