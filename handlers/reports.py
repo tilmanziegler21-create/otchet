@@ -19,12 +19,12 @@ from keyboards.employee import (
     CB_EMPLOYEE_REPORT,
     employee_reports_menu,
 )
-from services.calculations import summary_from_report
 from services.report_builder import (
     render_employee_summary,
     render_full_report,
     render_reports_list,
 )
+from services.report_service import summary_for_report
 from utils import dates
 
 router = Router(name="reports")
@@ -48,7 +48,7 @@ async def _send_today(message: Message) -> None:
         return
     # По одному сообщению на город.
     for report in reports:
-        summary = summary_from_report(report)
+        summary = await summary_for_report(report)
         if is_admin:
             await message.answer(
                 render_full_report(summary, f"ID {report.employee_telegram_id}")
@@ -120,7 +120,7 @@ async def show_employee_report(callback: CallbackQuery) -> None:
     if not is_admin and report.employee_telegram_id != callback.from_user.id:
         await callback.answer("Этот отчет вам недоступен", show_alert=True)
         return
-    summary = summary_from_report(report)
+    summary = await summary_for_report(report)
     if callback.message is not None:
         await callback.message.answer(render_employee_summary(summary))
     await callback.answer()

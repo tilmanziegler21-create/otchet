@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date, datetime
 
 DB_DATE_FORMAT = "%Y-%m-%d"
+DB_MONTH_FORMAT = "%Y-%m"
 
 _USER_FORMATS = ("%d.%m.%Y", "%d.%m.%y", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y")
 
@@ -33,6 +35,30 @@ def format_full(value: date | str) -> str:
     if isinstance(value, str):
         value = from_db(value)
     return value.strftime("%d.%m.%Y")
+
+
+def month_key(value: date | str) -> str:
+    """'2025-09' — ключ месяца для планов и месячной кассы."""
+    if isinstance(value, str):
+        value = from_db(value)
+    return value.strftime(DB_MONTH_FORMAT)
+
+
+def format_month(key: str) -> str:
+    """'2025-09' -> '09.2025'."""
+    return datetime.strptime(key, DB_MONTH_FORMAT).strftime("%m.%Y")
+
+
+def days_in_month(value: date | str) -> int:
+    if isinstance(value, str):
+        value = from_db(value)
+    return monthrange(value.year, value.month)[1]
+
+
+def shift_month(value: date, months: int) -> date:
+    """Первое число месяца, сдвинутого на `months` от даты."""
+    total = value.year * 12 + (value.month - 1) + months
+    return date(total // 12, total % 12 + 1, 1)
 
 
 def parse_user_date(text: str | None) -> date | None:

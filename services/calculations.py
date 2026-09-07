@@ -1,13 +1,15 @@
 """Все расчеты отчета.
 
-Экономика собрана в функциях `calculate_salary`, `calculate_net_profit`,
-`calculate_carlgauss` и `calculate_remainder` — чтобы менять ее в одном месте.
+Экономика собрана в функциях этого модуля — чтобы менять ее в одном месте.
 
 Текущая логика:
-    работникам = процент от общей выручки города или фикс за день
-    чистая     = общая выручка - работникам - общая себестоимость
-    CARLGAUSS  = 1/4 чистой
-    ОСТАТОК    = чистая - CARLGAUSS
+    менеджеру       = 5% от дневного оборота (в каждом городе)
+    работникам      = процент от оборота, фикс за день
+                      или фикс за месяц / число дней месяца
+    перевыполнение  = 25% от кассы месяца, превысившей план города
+    чистая          = оборот - менеджеру - работникам - перевыполнение - закуп
+    CARLGAUSS       = 1/4 чистой
+    ОСТАТОК         = чистая - CARLGAUSS
 """
 
 from __future__ import annotations
@@ -16,26 +18,64 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Sequence
 
-from database import SALARY_FIXED, SALARY_PERCENT, Report
+from database import SALARY_FIXED, SALARY_MONTHLY, SALARY_PERCENT, Report
 from utils import dates
 from utils.formatting import round_money
 
 # Доля Carlgauss в чистой прибыли.
 CARLGAUSS_SHARE = 0.25
+# Менеджеру от дневного оборота — одинаково во всех городах.
+MANAGER_SHARE = 0.05
+# Работникам от кассы, превысившей месячный план.
+BONUS_SHARE = 0.25
+
+
+def calculate_manager(total_revenue: float) -> float:
+    """5% менеджеру от общего дневного оборота."""
+    return float(total_revenue) * MANAGER_SHARE
 
 
 def calculate_salary(
-    total_revenue: float, salary_kind: str, salary_value: float
+    total_revenue: float,
+    salary_kind: str,
+    salary_value: float,
+    report_date: date | None = None,
 ) -> float:
-    """«Минус работникам»: свой процент или фикс в каждом городе."""
+    """«Минус работникам»: процент, фикс за день или фикс за месяц."""
     if salary_kind == SALARY_FIXED:
         return float(salary_value)
+    if salary_kind == SALARY_MONTHLY:
+        days = dates.days_in_month(report_date) if report_date else 30
+        return float(salary_value) / days
     return float(total_revenue) * float(salary_value) / 100
 
 
-def calculate_net_profit(revenue: float, cost: float, salary: float) -> float:
+def calculate_bonus(
+    month_revenue_before: float, day_revenue: float, plan: float
+) -> float:
+    """25% от той части кассы месяца, что превысила план.
+
+    Считается приростом: бонус дня = 25% от превышения на конец дня минус
+    25% от превышения на начало дня. Без плана (0) бонуса нет.
+    """
+    if plan <= 0:
+        return 0.0
+    before = max(0.0, float(month_revenue_before) - float(plan))
+    after = max(0.0, float(month_revenue_before) + float(day_revenue) - float(plan))
+    return (after - before) * BONUS_SHARE
+
+
+def calculate_net_profit(
+    revenue: float, cost: float, salary: float, manager: float, bonus: float = 0.0
+) -> float:
     """Единственное место с формулой чистой прибыли."""
-    return float(revenue) - float(salary) - float(cost)
+    return (
+        float(revenue)
+        - float(manager)
+        - float(salary)
+        - float(bonus)
+        - float(cost)
+    )
 
 
 def calculate_carlgauss(net_profit: float) -> float:
@@ -87,6 +127,9 @@ class ReportSummary:
     city_name: str | None = None
     salary_kind: str = SALARY_PERCENT
     salary_value: float = 0.0
+    bonus: float = 0.0
+    plan: float = 0.0
+    month_revenue: float = 0.0
     report_id: int | None = None
     employee_telegram_id: int | None = None
 
@@ -104,16 +147,29 @@ class ReportSummary:
         return sum(line.cost for line in self.lines)
 
     @property
+    def manager_amount(self) -> float:
+        return calculate_manager(self.total_revenue)
+
+    @property
     def salary_amount(self) -> float:
         return calculate_salary(
-            self.total_revenue, self.salary_kind, self.salary_value
+            self.total_revenue, self.salary_kind, self.salary_value, self.report_date
         )
+
+    @property
+    def deductions(self) -> float:
+        """Все, что уходит людям: менеджеру, работникам и за перевыполнение."""
+        return self.manager_amount + self.salary_amount + self.bonus
 
     @property
     def net_profit(self) -> float:
         """Главная цифра — строго по общей формуле, а не суммой категорий."""
         return calculate_net_profit(
-            self.total_revenue, self.total_cost, self.salary_amount
+            self.total_revenue,
+            self.total_cost,
+            self.salary_amount,
+            self.manager_amount,
+            self.bonus,
         )
 
     @property
@@ -125,18 +181,16 @@ class ReportSummary:
         return calculate_remainder(self.net_profit)
 
     # ------------------------------------------------------- по категориям
-    def category_salary(self, line: CategoryLine) -> float:
-        """Доля «работникам», отнесенная на категорию пропорционально выручке."""
+    def category_deductions(self, line: CategoryLine) -> float:
+        """Доля выплат людям, отнесенная на категорию пропорционально выручке."""
         total = self.total_revenue
         if not total:
             return 0.0
-        return self.salary_amount * line.revenue / total
+        return self.deductions * line.revenue / total
 
     def category_profit(self, line: CategoryLine) -> float:
         """Прибыль категории пропорционально ее выручке и себестоимости."""
-        return calculate_net_profit(
-            line.revenue, line.cost, self.category_salary(line)
-        )
+        return line.revenue - self.category_deductions(line) - line.cost
 
     # ------------------------------------------------------------- жидкости
     @property
@@ -167,6 +221,9 @@ def build_summary(
     city_name: str | None = None,
     salary_kind: str = SALARY_PERCENT,
     salary_value: float = 0.0,
+    bonus: float = 0.0,
+    plan: float = 0.0,
+    month_revenue: float = 0.0,
     report_id: int | None = None,
     employee_telegram_id: int | None = None,
 ) -> ReportSummary:
@@ -177,13 +234,16 @@ def build_summary(
         city_name=city_name,
         salary_kind=salary_kind,
         salary_value=salary_value,
+        bonus=bonus,
+        plan=plan,
+        month_revenue=month_revenue,
         report_id=report_id,
         employee_telegram_id=employee_telegram_id,
     )
 
 
-def summary_from_report(report: Report) -> ReportSummary:
-    """Собирает расчеты из сохраненного отчета (по снимку закупочных цен)."""
+def summary_from_report(report: Report, month_revenue: float = 0.0) -> ReportSummary:
+    """Собирает расчеты из сохраненного отчета (по сохраненным снимкам)."""
     lines = [
         CategoryLine(
             category_id=item.category_id,
@@ -202,6 +262,9 @@ def summary_from_report(report: Report) -> ReportSummary:
         city_name=report.city_name,
         salary_kind=report.salary_kind,
         salary_value=report.salary_value,
+        bonus=report.bonus,
+        plan=report.plan,
+        month_revenue=month_revenue,
         report_id=report.id,
         employee_telegram_id=report.employee_telegram_id,
     )

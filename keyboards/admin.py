@@ -21,6 +21,8 @@ CB_CITY_CARD = "adm:city:"
 CB_CITY_TOGGLE = "adm:city_toggle:"
 CB_CITY_SALARY = "adm:city_salary:"
 CB_SALARY_KIND = "adm:salary_kind:"
+CB_CITY_PLAN = "adm:city_plan:"
+CB_PLAN_MONTH = "adm:plan_month:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
@@ -121,6 +123,12 @@ def city_card_menu(city: City) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🎯 План на месяц",
+                    callback_data=f"{CB_CITY_PLAN}{city.id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🚫 Выключить город" if city.active else "✅ Включить город",
                     callback_data=f"{CB_CITY_TOGGLE}{city.id}",
                 )
@@ -135,14 +143,20 @@ def salary_kind_menu(city_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📊 Процент от выручки",
+                    text="📊 Процент от оборота",
                     callback_data=f"{CB_SALARY_KIND}percent:{city_id}",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="💶 Фиксированная сумма за день",
+                    text="💶 Фикс за день",
                     callback_data=f"{CB_SALARY_KIND}fixed:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗓 Фикс за месяц",
+                    callback_data=f"{CB_SALARY_KIND}monthly:{city_id}",
                 )
             ],
             [
@@ -152,6 +166,26 @@ def salary_kind_menu(city_id: int) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def plan_months_menu(
+    city_id: int, months: Sequence[tuple[str, float]]
+) -> InlineKeyboardMarkup:
+    rows = []
+    for month, amount in months:
+        value = format_money(amount) if amount > 0 else "не задан"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{dates.format_month(month)} — {value}",
+                    callback_data=f"{CB_PLAN_MONTH}{month}:{city_id}",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{CB_CITY_CARD}{city_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def liquid_menu() -> InlineKeyboardMarkup:

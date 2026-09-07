@@ -13,9 +13,11 @@ from config import config
 ROLE_ADMIN = "admin"
 ROLE_EMPLOYEE = "employee"
 
-# Как считается «минус работникам» в городе: процент от выручки или фикс за день.
-SALARY_PERCENT = "percent"
-SALARY_FIXED = "fixed"
+# Как считается «минус работникам» в городе.
+SALARY_PERCENT = "percent"  # процент от дневного оборота
+SALARY_FIXED = "fixed"  # фиксированная сумма за день
+SALARY_MONTHLY = "monthly"  # фикс за месяц, в отчете делится на дни месяца
+SALARY_KINDS = (SALARY_PERCENT, SALARY_FIXED, SALARY_MONTHLY)
 
 # name, purchase_price, is_liquid
 DEFAULT_CATEGORIES: tuple[tuple[str, float, int], ...] = (
@@ -47,6 +49,13 @@ CREATE TABLE IF NOT EXISTS cities (
     active       INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS monthly_plans (
+    city_id INTEGER NOT NULL REFERENCES cities(id),
+    month   TEXT    NOT NULL,
+    amount  REAL    NOT NULL DEFAULT 0,
+    PRIMARY KEY (city_id, month)
+);
+
 CREATE TABLE IF NOT EXISTS daily_reports (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     date                  TEXT    NOT NULL,
@@ -55,6 +64,8 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     customers_count       INTEGER NOT NULL DEFAULT 0,
     salary_kind_snapshot  TEXT    NOT NULL DEFAULT 'percent',
     salary_value_snapshot REAL    NOT NULL DEFAULT 0,
+    bonus_snapshot        REAL    NOT NULL DEFAULT 0,
+    plan_snapshot         REAL    NOT NULL DEFAULT 0,
     created_at            TEXT    NOT NULL
 );
 
@@ -111,6 +122,8 @@ class Report:
     customers_count: int
     salary_kind: str
     salary_value: float
+    bonus: float
+    plan: float
     created_at: str
     items: tuple[ReportItem, ...]
 
@@ -151,6 +164,16 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     if "salary_value_snapshot" not in reports:
         await db.execute(
             "ALTER TABLE daily_reports ADD COLUMN salary_value_snapshot REAL "
+            "NOT NULL DEFAULT 0"
+        )
+    if "bonus_snapshot" not in reports:
+        await db.execute(
+            "ALTER TABLE daily_reports ADD COLUMN bonus_snapshot REAL "
+            "NOT NULL DEFAULT 0"
+        )
+    if "plan_snapshot" not in reports:
+        await db.execute(
+            "ALTER TABLE daily_reports ADD COLUMN plan_snapshot REAL "
             "NOT NULL DEFAULT 0"
         )
 
@@ -336,8 +359,8 @@ async def add_city(name: str) -> int:
 
 
 async def set_city_salary(city_id: int, salary_kind: str, salary_value: float) -> None:
-    """Ставка «минус работникам» города: процент от выручки или фикс за день."""
-    if salary_kind not in (SALARY_PERCENT, SALARY_FIXED):
+    """Ставка «минус работникам»: процент, фикс за день или фикс за месяц."""
+    if salary_kind not in SALARY_KINDS:
         raise ValueError(f"Неизвестный тип ставки: {salary_kind}")
     async with _connect() as db:
         await db.execute(
@@ -355,6 +378,56 @@ async def set_city_active(city_id: int, active: bool) -> None:
         await db.commit()
 
 
+# --------------------------------------------------- планы и месячная касса
+
+
+async def get_monthly_plan(city_id: int, month: str) -> float:
+    """План города на месяц ('2025-09'). 0 — план не задан, бонус не считается."""
+    async with _connect() as db:
+        cursor = await db.execute(
+            "SELECT amount FROM monthly_plans WHERE city_id = ? AND month = ?",
+            (city_id, month),
+        )
+        row = await cursor.fetchone()
+    return float(row[0]) if row else 0.0
+
+
+async def set_monthly_plan(city_id: int, month: str, amount: float) -> None:
+    async with _connect() as db:
+        if amount <= 0:
+            await db.execute(
+                "DELETE FROM monthly_plans WHERE city_id = ? AND month = ?",
+                (city_id, month),
+            )
+        else:
+            await db.execute(
+                "INSERT INTO monthly_plans (city_id, month, amount) VALUES (?, ?, ?) "
+                "ON CONFLICT(city_id, month) DO UPDATE SET amount = excluded.amount",
+                (city_id, month, float(amount)),
+            )
+        await db.commit()
+
+
+async def get_month_revenue(
+    city_id: int, month: str, exclude_report_id: int | None = None
+) -> float:
+    """Касса города с начала месяца по сохраненным отчетам."""
+    query = (
+        "SELECT COALESCE(SUM(i.revenue), 0) "
+        "FROM daily_reports AS r "
+        "JOIN daily_report_items AS i ON i.report_id = r.id "
+        "WHERE r.city_id = ? AND r.date LIKE ?"
+    )
+    params: list[object] = [city_id, f"{month}-%"]
+    if exclude_report_id is not None:
+        query += " AND r.id != ?"
+        params.append(exclude_report_id)
+    async with _connect() as db:
+        cursor = await db.execute(query, params)
+        row = await cursor.fetchone()
+    return float(row[0]) if row else 0.0
+
+
 # -------------------------------------------------------------- reports
 
 
@@ -365,6 +438,8 @@ async def save_report(
     customers_count: int,
     salary_kind: str,
     salary_value: float,
+    bonus: float,
+    plan: float,
     items: Sequence[tuple[int, int, float, float]],
 ) -> int:
     """items: (category_id, quantity, revenue, purchase_price_snapshot)."""
@@ -373,8 +448,9 @@ async def save_report(
         cursor = await db.execute(
             "INSERT INTO daily_reports "
             "(date, city_id, employee_telegram_id, customers_count, "
-            " salary_kind_snapshot, salary_value_snapshot, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " salary_kind_snapshot, salary_value_snapshot, bonus_snapshot, "
+            " plan_snapshot, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 report_date,
                 city_id,
@@ -382,6 +458,8 @@ async def save_report(
                 customers_count,
                 salary_kind,
                 float(salary_value),
+                float(bonus),
+                float(plan),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -429,6 +507,8 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
         customers_count=int(row["customers_count"]),
         salary_kind=row["salary_kind_snapshot"] or SALARY_PERCENT,
         salary_value=float(row["salary_value_snapshot"] or 0),
+        bonus=float(row["bonus_snapshot"] or 0),
+        plan=float(row["plan_snapshot"] or 0),
         created_at=row["created_at"],
         items=items,
     )
@@ -437,7 +517,8 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
 _REPORT_SELECT = (
     "SELECT r.id, r.date, r.city_id, ci.name AS city_name, "
     "       r.employee_telegram_id, r.customers_count, "
-    "       r.salary_kind_snapshot, r.salary_value_snapshot, r.created_at "
+    "       r.salary_kind_snapshot, r.salary_value_snapshot, "
+    "       r.bonus_snapshot, r.plan_snapshot, r.created_at "
     "FROM daily_reports AS r "
     "LEFT JOIN cities AS ci ON ci.id = r.city_id "
 )

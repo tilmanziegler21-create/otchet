@@ -30,6 +30,7 @@ from keyboards.employee import (
 )
 from services.calculations import CategoryLine, build_summary
 from services.notifications import send_report_to_admins
+from services.report_service import resolve_bonus
 from services.report_builder import render_employee_result, render_preview
 from utils import dates
 from utils.formatting import parse_amount, parse_int
@@ -329,6 +330,12 @@ async def confirm_report(
     salary_kind = city.salary_kind if city else db.SALARY_PERCENT
     salary_value = city.salary_value if city else 0.0
 
+    # Бонус за перевыполнение считаем от кассы месяца до этого отчета.
+    day_revenue = sum(revenue for _, _, revenue, _ in items)
+    bonus_context = await resolve_bonus(
+        city_id, dates.from_db(report_date), day_revenue
+    )
+
     report_id = await db.save_report(
         report_date=report_date,
         city_id=city_id,
@@ -336,6 +343,8 @@ async def confirm_report(
         customers_count=customers_count,
         salary_kind=salary_kind,
         salary_value=salary_value,
+        bonus=bonus_context.bonus,
+        plan=bonus_context.plan,
         items=items,
     )
     summary = build_summary(
@@ -345,6 +354,9 @@ async def confirm_report(
         city_name=city.name if city else data.get("city_name"),
         salary_kind=salary_kind,
         salary_value=salary_value,
+        bonus=bonus_context.bonus,
+        plan=bonus_context.plan,
+        month_revenue=bonus_context.month_revenue,
         report_id=report_id,
         employee_telegram_id=callback.from_user.id,
     )

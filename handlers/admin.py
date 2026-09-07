@@ -27,7 +27,9 @@ from keyboards.admin import (
     CB_CLOSE,
     CB_LIQUID_PREFIX,
     CB_MENU,
+    CB_CITY_PLAN,
     CB_PICK_PREFIX,
+    CB_PLAN_MONTH,
     CB_PRICE_EDIT,
     CB_PRICE_SET,
     CB_PRICES,
@@ -40,18 +42,21 @@ from keyboards.admin import (
     cities_menu,
     city_card_menu,
     liquid_menu,
+    plan_months_menu,
     reports_menu,
     salary_kind_menu,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
-from services.calculations import summary_from_report
 from services.report_builder import (
     render_cities,
     render_city_card,
     render_full_report,
+    render_plans,
     render_prices,
     render_reports_list,
 )
+from services.report_service import summary_for_report
+from utils import dates
 from utils.access import IsAdmin, IsNotAdmin
 from utils.formatting import format_money, parse_amount
 
@@ -72,6 +77,7 @@ class AdminStates(StatesGroup):
     waiting_category_is_liquid = State()
     waiting_city_name = State()
     waiting_salary_value = State()
+    waiting_plan_value = State()
 
 
 # ------------------------------------------------------------ вход в панель
@@ -321,6 +327,12 @@ async def _resolve_city(callback: CallbackQuery, prefix: str) -> db.City | None:
     return city
 
 
+async def _city_card_text(city: db.City) -> str:
+    month = dates.month_key(dates.today())
+    plan = await db.get_monthly_plan(city.id, month)
+    return render_city_card(city, plan=plan, plan_month=month)
+
+
 @router.callback_query(F.data.startswith(CB_CITY_CARD), IsAdmin())
 async def show_city_card(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -329,7 +341,7 @@ async def show_city_card(callback: CallbackQuery, state: FSMContext) -> None:
         return
     if callback.message is not None:
         await callback.message.edit_text(
-            render_city_card(city), reply_markup=city_card_menu(city)
+            await _city_card_text(city), reply_markup=city_card_menu(city)
         )
     await callback.answer()
 
@@ -343,7 +355,7 @@ async def toggle_city(callback: CallbackQuery) -> None:
     updated = await db.get_city(city.id)
     if callback.message is not None and updated is not None:
         await callback.message.edit_text(
-            render_city_card(updated), reply_markup=city_card_menu(updated)
+            await _city_card_text(updated), reply_markup=city_card_menu(updated)
         )
     await callback.answer(
         f"{city.name}: {'выключен' if city.active else 'включен'}"
@@ -369,7 +381,7 @@ async def choose_salary_kind(callback: CallbackQuery, state: FSMContext) -> None
 async def ask_salary_value(callback: CallbackQuery, state: FSMContext) -> None:
     payload = (callback.data or "")[len(CB_SALARY_KIND) :]
     kind, _, raw_id = payload.partition(":")
-    if kind not in (db.SALARY_PERCENT, db.SALARY_FIXED) or not raw_id.isdigit():
+    if kind not in db.SALARY_KINDS or not raw_id.isdigit():
         await callback.answer("Некорректный выбор", show_alert=True)
         return
     city = await db.get_city(int(raw_id))
@@ -379,13 +391,18 @@ async def ask_salary_value(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.set_state(AdminStates.waiting_salary_value)
     await state.update_data(salary_city_id=city.id, salary_kind=kind)
-    prompt = (
-        "Введите процент от общей выручки (например 30 или 27,5):"
-        if kind == db.SALARY_PERCENT
-        else f"Введите фиксированную сумму за день (в {config.currency}):"
-    )
+    prompts = {
+        db.SALARY_PERCENT: "Введите процент от общего оборота (например 30 или 27,5):",
+        db.SALARY_FIXED: f"Введите сумму за день (в {config.currency}):",
+        db.SALARY_MONTHLY: (
+            f"Введите сумму за месяц (в {config.currency}), например 1300.\n\n"
+            "В дневном отчете она делится на число дней этого месяца."
+        ),
+    }
     if callback.message is not None:
-        await callback.message.edit_text(f"🏙 <b>{escape(city.name)}</b>\n\n{prompt}")
+        await callback.message.edit_text(
+            f"🏙 <b>{escape(city.name)}</b>\n\n{prompts[kind]}"
+        )
     await callback.answer()
 
 
@@ -411,8 +428,80 @@ async def save_salary_value(message: Message, state: FSMContext) -> None:
         await message.answer("Город не найден.", reply_markup=admin_menu())
         return
     await message.answer(
-        "✅ Ставка сохранена.\n\n" + render_city_card(city),
+        "✅ Ставка сохранена.\n\n" + await _city_card_text(city),
         reply_markup=city_card_menu(city),
+    )
+
+
+# --------------------------------------------------------- план на месяц
+
+
+async def _plan_months(city_id: int) -> list[tuple[str, float]]:
+    """Прошлый, текущий и следующий месяц с текущими планами."""
+    today = dates.today()
+    months = [dates.month_key(dates.shift_month(today, shift)) for shift in (-1, 0, 1)]
+    return [(month, await db.get_monthly_plan(city_id, month)) for month in months]
+
+
+@router.callback_query(F.data.startswith(CB_CITY_PLAN), IsAdmin())
+async def show_plans(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    city = await _resolve_city(callback, CB_CITY_PLAN)
+    if city is None:
+        return
+    months = await _plan_months(city.id)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            render_plans(city, months),
+            reply_markup=plan_months_menu(city.id, months),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_PLAN_MONTH), IsAdmin())
+async def ask_plan_value(callback: CallbackQuery, state: FSMContext) -> None:
+    payload = (callback.data or "")[len(CB_PLAN_MONTH) :]
+    month, _, raw_id = payload.partition(":")
+    if not raw_id.isdigit() or len(month) != 7:
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+    city = await db.get_city(int(raw_id))
+    if city is None:
+        await callback.answer("Город не найден", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_plan_value)
+    await state.update_data(plan_city_id=city.id, plan_month=month)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🎯 <b>{escape(city.name)}</b>, {dates.format_month(month)}\n\n"
+            f"Введите план по обороту за месяц (в {config.currency}).\n"
+            "0 — убрать план, тогда бонус за перевыполнение не начисляется."
+        )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_plan_value, IsAdmin(), F.text)
+async def save_plan_value(message: Message, state: FSMContext) -> None:
+    amount = parse_amount(message.text)
+    if amount is None:
+        await message.answer("Нужна сумма, например 12000. Попробуйте еще раз:")
+        return
+    data = await state.get_data()
+    city_id = int(data["plan_city_id"])
+    month = data["plan_month"]
+    await db.set_monthly_plan(city_id, month, amount)
+    await state.clear()
+    city = await db.get_city(city_id)
+    if city is None:
+        await message.answer("Город не найден.", reply_markup=admin_menu())
+        return
+    months = await _plan_months(city.id)
+    saved = format_money(amount) if amount > 0 else "убран"
+    await message.answer(
+        f"✅ План на {dates.format_month(month)}: {saved}\n\n"
+        + render_plans(city, months),
+        reply_markup=plan_months_menu(city.id, months),
     )
 
 
@@ -449,7 +538,7 @@ async def show_report(callback: CallbackQuery) -> None:
     if report is None:
         await callback.answer("Отчет не найден", show_alert=True)
         return
-    summary = summary_from_report(report)
+    summary = await summary_for_report(report)
     if callback.message is not None:
         await callback.message.answer(
             render_full_report(summary, f"ID {report.employee_telegram_id}"),

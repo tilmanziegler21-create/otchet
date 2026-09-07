@@ -6,16 +6,22 @@ from datetime import date
 from html import escape
 from typing import Sequence
 
-from database import SALARY_FIXED, Category, City, ReportBrief
-from services.calculations import ReportSummary
+from database import SALARY_FIXED, SALARY_MONTHLY, Category, City, ReportBrief
+from services.calculations import BONUS_SHARE, MANAGER_SHARE, ReportSummary
 from utils import dates
 from utils.formatting import format_amount, format_money, format_quantity, format_upd
 
 
+def _percent_label(share: float) -> str:
+    return f"{format_amount(share * 100, 2)}%"
+
+
 def format_salary_rate(salary_kind: str, salary_value: float) -> str:
-    """'30%' или '50€ фикс' — как задана ставка работникам в городе."""
+    """'30%', '50€ в день' или '1300€ в месяц' — как задана ставка города."""
     if salary_kind == SALARY_FIXED:
-        return f"{format_money(salary_value)} фикс"
+        return f"{format_money(salary_value)} в день"
+    if salary_kind == SALARY_MONTHLY:
+        return f"{format_money(salary_value)} в месяц"
     return f"{format_amount(salary_value, 2)}%"
 
 
@@ -57,7 +63,26 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
 
     rate = format_salary_rate(summary.salary_kind, summary.salary_value)
     parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
+    parts.append(
+        f"МЕНЕДЖЕРУ ({_percent_label(MANAGER_SHARE)}) — "
+        f"{format_money(summary.manager_amount)}"
+    )
     parts.append(f"РАБОТНИКАМ ({rate}) — {format_money(summary.salary_amount)}")
+
+    if summary.plan > 0:
+        over = summary.month_revenue - summary.plan
+        progress = (
+            f"перевыполнение {format_money(over)}"
+            if over > 0
+            else f"до плана {format_money(-over)}"
+        )
+        parts.append(
+            f"ПЕРЕВЫПОЛНЕНИЕ ({_percent_label(BONUS_SHARE)}) — "
+            f"{format_money(summary.bonus)}\n"
+            f"Касса месяца — {format_money(summary.month_revenue)} "
+            f"при плане {format_money(summary.plan)} ({progress})"
+        )
+
     parts.append(f"ОБЩАЯ СЕБЕСТОИМОСТЬ — {format_money(summary.total_cost)}")
     parts.append(f"<b>ЧИСТАЯ — {format_money(summary.net_profit)}</b>")
     parts.append(f"CARLGAUSS — {format_money(summary.carlgauss)}")
@@ -133,6 +158,20 @@ def render_prices(categories: Sequence[Category]) -> str:
     return "\n".join(lines)
 
 
+def render_plans(city: City, plans: Sequence[tuple[str, float]]) -> str:
+    """Планы города по месяцам — от них считается бонус за перевыполнение."""
+    lines = [f"🎯 <b>План {escape(city.name)}</b>", ""]
+    for month, amount in plans:
+        value = format_money(amount) if amount > 0 else "не задан"
+        lines.append(f"{dates.format_month(month)} — {value}")
+    lines.append("")
+    lines.append(
+        f"Работникам идет {_percent_label(BONUS_SHARE)} от кассы месяца, "
+        "которая превысила план. Без плана бонус не начисляется."
+    )
+    return "\n".join(lines)
+
+
 def render_cities(cities: Sequence[City]) -> str:
     if not cities:
         return (
@@ -151,12 +190,16 @@ def render_cities(cities: Sequence[City]) -> str:
     return "\n".join(lines)
 
 
-def render_city_card(city: City) -> str:
+def render_city_card(city: City, plan: float = 0.0, plan_month: str = "") -> str:
     rate = format_salary_rate(city.salary_kind, city.salary_value)
+    plan_text = format_money(plan) if plan > 0 else "не задан"
+    month_text = f" ({dates.format_month(plan_month)})" if plan_month else ""
     return (
         f"🏙 <b>{escape(city.name)}</b>\n\n"
         f"Статус: {'включен' if city.active else 'выключен'}\n"
-        f"Минус работникам: {rate}"
+        f"Минус работникам: {rate}\n"
+        f"План{month_text}: {plan_text}\n"
+        f"Менеджеру: {_percent_label(MANAGER_SHARE)} от оборота (во всех городах)"
     )
 
 
