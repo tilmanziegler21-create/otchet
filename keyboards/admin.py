@@ -23,6 +23,8 @@ CB_CITY_SALARY = "adm:city_salary:"
 CB_SALARY_KIND = "adm:salary_kind:"
 CB_CITY_PLAN = "adm:city_plan:"
 CB_PLAN_MONTH = "adm:plan_month:"
+CB_PERIOD_CITY = "adm:period_city:"
+CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
@@ -57,6 +59,14 @@ def admin_menu() -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton(text="🏙 Города", callback_data=CB_CITIES)],
+            [
+                InlineKeyboardButton(
+                    text="📅 Отчет за неделю", callback_data=f"{CB_PERIOD_CITY}week"
+                ),
+                InlineKeyboardButton(
+                    text="🗓 Отчет за месяц", callback_data=f"{CB_PERIOD_CITY}month"
+                ),
+            ],
             [
                 InlineKeyboardButton(
                     text="🗂 Сохраненные отчеты", callback_data=CB_REPORTS
@@ -166,6 +176,45 @@ def salary_kind_menu(city_id: int) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def period_cities_menu(kind: str, cities: Sequence[City]) -> InlineKeyboardMarkup:
+    """Выбор города для недельной или месячной сводки."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'🏙' if city.active else '🚫'} {city.name}",
+                callback_data=f"{CB_PERIOD}{kind}:0:{city.id}",
+            )
+        ]
+        for city in cities
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def period_menu(
+    kind: str, city_id: int, periods: Sequence[tuple[int, str]]
+) -> InlineKeyboardMarkup:
+    """Переключение периода: текущий, предыдущий, позапрошлый."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{CB_PERIOD}{kind}:{offset}:{city_id}",
+            )
+        ]
+        for offset, label in periods
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ К городам", callback_data=f"{CB_PERIOD_CITY}{kind}"
+            ),
+            InlineKeyboardButton(text="🛠 В админ-панель", callback_data=CB_MENU),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def plan_months_menu(

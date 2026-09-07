@@ -28,6 +28,8 @@ from keyboards.admin import (
     CB_LIQUID_PREFIX,
     CB_MENU,
     CB_CITY_PLAN,
+    CB_PERIOD,
+    CB_PERIOD_CITY,
     CB_PICK_PREFIX,
     CB_PLAN_MONTH,
     CB_PRICE_EDIT,
@@ -42,20 +44,28 @@ from keyboards.admin import (
     cities_menu,
     city_card_menu,
     liquid_menu,
+    period_cities_menu,
+    period_menu,
     plan_months_menu,
     reports_menu,
     salary_kind_menu,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
+from services.calculations import PERIOD_MONTH, PERIOD_WEEK
 from services.report_builder import (
     render_cities,
     render_city_card,
     render_full_report,
+    render_period_report,
     render_plans,
     render_prices,
     render_reports_list,
 )
-from services.report_service import summary_for_report
+from services.report_service import (
+    period_bounds,
+    summary_for_period,
+    summary_for_report,
+)
 from utils import dates
 from utils.access import IsAdmin, IsNotAdmin
 from utils.formatting import format_money, parse_amount
@@ -503,6 +513,93 @@ async def save_plan_value(message: Message, state: FSMContext) -> None:
         + render_plans(city, months),
         reply_markup=plan_months_menu(city.id, months),
     )
+
+
+# ------------------------------------------- сводки за неделю и за месяц
+
+
+PERIOD_LABELS = {
+    PERIOD_WEEK: {0: "Текущая неделя", -1: "Прошлая неделя", -2: "Позапрошлая неделя"},
+    PERIOD_MONTH: {0: "Текущий месяц", -1: "Прошлый месяц", -2: "Позапрошлый месяц"},
+}
+
+
+def _period_buttons(kind: str) -> list[tuple[int, str]]:
+    """Три периода с датами на кнопках: 'Прошлая неделя · 25.08–31.08'."""
+    buttons = []
+    for offset, label in PERIOD_LABELS[kind].items():
+        start, end = period_bounds(kind, offset)
+        if kind == PERIOD_WEEK:
+            period = dates.format_range(start, end)
+        else:
+            period = dates.format_month(dates.month_key(start))
+        buttons.append((offset, f"{label} · {period}"))
+    return buttons
+
+
+async def _ask_period_city(target: Message | CallbackQuery, kind: str) -> None:
+    cities = await db.get_cities()
+    kind_name = "неделю" if kind == PERIOD_WEEK else "месяц"
+    text = f"Выберите город для отчета за {kind_name}:"
+    if not cities:
+        text = "Городов пока нет — сначала добавьте город в «🏙 Города»."
+    markup = period_cities_menu(kind, cities) if cities else back_menu()
+    if isinstance(target, CallbackQuery):
+        if target.message is not None:
+            await target.message.edit_text(text, reply_markup=markup)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=markup)
+
+
+@router.message(Command("week"), IsAdmin())
+async def cmd_week(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _ask_period_city(message, PERIOD_WEEK)
+
+
+@router.message(Command("month"), IsAdmin())
+async def cmd_month(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _ask_period_city(message, PERIOD_MONTH)
+
+
+@router.message(Command("week", "month"), IsNotAdmin())
+async def cmd_period_denied(message: Message) -> None:
+    await message.answer("Команда недоступна.")
+
+
+@router.callback_query(F.data.startswith(CB_PERIOD_CITY), IsAdmin())
+async def choose_period_city(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    kind = (callback.data or "")[len(CB_PERIOD_CITY) :]
+    if kind not in PERIOD_LABELS:
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+    await _ask_period_city(callback, kind)
+
+
+@router.callback_query(F.data.startswith(CB_PERIOD), IsAdmin())
+async def show_period_report(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    kind, _, rest = (callback.data or "")[len(CB_PERIOD) :].partition(":")
+    raw_offset, _, raw_city = rest.partition(":")
+    if kind not in PERIOD_LABELS or not raw_city.isdigit():
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+    city = await db.get_city(int(raw_city))
+    if city is None:
+        await callback.answer("Город не найден", show_alert=True)
+        return
+
+    offset = int(raw_offset)
+    summary = await summary_for_period(kind, offset, city.id, city_name=city.name)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            render_period_report(summary),
+            reply_markup=period_menu(kind, city.id, _period_buttons(kind)),
+        )
+    await callback.answer()
 
 
 # ------------------------------------------------------- сохраненные отчеты

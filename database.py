@@ -551,6 +551,23 @@ async def get_reports_by_date(
         return [await _fetch_report(db, row) for row in rows]
 
 
+async def get_reports_between(
+    start_date: str, end_date: str, city_id: int | None = None
+) -> list[Report]:
+    """Отчеты за период включительно — основа недельной и месячной сводки."""
+    query = _REPORT_SELECT + "WHERE r.date BETWEEN ? AND ?"
+    params: list[object] = [start_date, end_date]
+    if city_id is not None:
+        query += " AND r.city_id = ?"
+        params.append(city_id)
+    query += " ORDER BY r.date, r.id"
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [await _fetch_report(db, row) for row in rows]
+
+
 async def count_reports_by_date(report_date: str, city_id: int | None = None) -> int:
     query = "SELECT COUNT(*) FROM daily_reports WHERE date = ?"
     params: list[object] = [report_date]

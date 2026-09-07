@@ -29,6 +29,10 @@ MANAGER_SHARE = 0.05
 # Работникам от кассы, превысившей месячный план.
 BONUS_SHARE = 0.25
 
+# Периоды сводных отчетов.
+PERIOD_WEEK = "week"
+PERIOD_MONTH = "month"
+
 
 def calculate_manager(total_revenue: float) -> float:
     """5% менеджеру от общего дневного оборота."""
@@ -119,19 +123,12 @@ class CategoryLine:
         return calculate_average_check(self.revenue, self.quantity)
 
 
-@dataclass(frozen=True)
-class ReportSummary:
-    report_date: date
-    customers_count: int
-    lines: tuple[CategoryLine, ...]
-    city_name: str | None = None
-    salary_kind: str = SALARY_PERCENT
-    salary_value: float = 0.0
-    bonus: float = 0.0
-    plan: float = 0.0
-    month_revenue: float = 0.0
-    report_id: int | None = None
-    employee_telegram_id: int | None = None
+class SummaryTotals:
+    """Итоги, одинаковые для отчета за день и за период.
+
+    Наследник обязан дать `lines`, `customers_count`, `manager_amount`,
+    `salary_amount` и `bonus` — остальное считается отсюда.
+    """
 
     # ---------------------------------------------------------- общие итоги
     @property
@@ -145,16 +142,6 @@ class ReportSummary:
     @property
     def total_cost(self) -> float:
         return sum(line.cost for line in self.lines)
-
-    @property
-    def manager_amount(self) -> float:
-        return calculate_manager(self.total_revenue)
-
-    @property
-    def salary_amount(self) -> float:
-        return calculate_salary(
-            self.total_revenue, self.salary_kind, self.salary_value, self.report_date
-        )
 
     @property
     def deductions(self) -> float:
@@ -214,6 +201,31 @@ class ReportSummary:
         return calculate_upd(self.liquid_quantity, self.customers_count)
 
 
+@dataclass(frozen=True)
+class ReportSummary(SummaryTotals):
+    report_date: date
+    customers_count: int
+    lines: tuple[CategoryLine, ...]
+    city_name: str | None = None
+    salary_kind: str = SALARY_PERCENT
+    salary_value: float = 0.0
+    bonus: float = 0.0
+    plan: float = 0.0
+    month_revenue: float = 0.0
+    report_id: int | None = None
+    employee_telegram_id: int | None = None
+
+    @property
+    def manager_amount(self) -> float:
+        return calculate_manager(self.total_revenue)
+
+    @property
+    def salary_amount(self) -> float:
+        return calculate_salary(
+            self.total_revenue, self.salary_kind, self.salary_value, self.report_date
+        )
+
+
 def build_summary(
     report_date: date,
     customers_count: int,
@@ -239,6 +251,138 @@ def build_summary(
         month_revenue=month_revenue,
         report_id=report_id,
         employee_telegram_id=employee_telegram_id,
+    )
+
+
+@dataclass(frozen=True)
+class PeriodLine:
+    """Категория, сложенная за несколько дней: закуп берется суммой снимков."""
+
+    category_id: int
+    name: str
+    is_liquid: bool
+    quantity: int
+    revenue: float
+    cost: float
+
+    @property
+    def average_check(self) -> float:
+        return calculate_average_check(self.revenue, self.quantity)
+
+
+@dataclass(frozen=True)
+class DayLine:
+    report_date: date
+    quantity: int
+    revenue: float
+    customers_count: int
+
+
+@dataclass(frozen=True)
+class PeriodSummary(SummaryTotals):
+    """Сводка за неделю или месяц по одному городу.
+
+    Выплаты не пересчитываются заново, а складываются из снимков дневных
+    отчетов — поэтому цифры периода сходятся с тем, что уже видели по дням.
+    """
+
+    kind: str
+    start: date
+    end: date
+    lines: tuple[PeriodLine, ...]
+    days: tuple[DayLine, ...]
+    customers_count: int
+    salary_amount: float
+    bonus: float
+    city_name: str | None = None
+    salary_rate: tuple[str, float] | None = None
+
+    @property
+    def manager_amount(self) -> float:
+        return calculate_manager(self.total_revenue)
+
+    @property
+    def reports_count(self) -> int:
+        return len(self.days)
+
+
+def build_period_summary(
+    reports: Sequence[Report],
+    kind: str,
+    start: date,
+    end: date,
+    city_name: str | None = None,
+) -> PeriodSummary:
+    """Складывает дневные отчеты города в сводку за период."""
+    categories: dict[int, dict] = {}
+    days: dict[str, dict] = {}
+    salary_amount = 0.0
+    bonus = 0.0
+    rates: set[tuple[str, float]] = set()
+
+    for report in reports:
+        report_revenue = sum(item.revenue for item in report.items)
+        report_quantity = sum(item.quantity for item in report.items)
+        salary_amount += calculate_salary(
+            report_revenue,
+            report.salary_kind,
+            report.salary_value,
+            dates.from_db(report.date),
+        )
+        bonus += report.bonus
+        rates.add((report.salary_kind, report.salary_value))
+
+        day = days.setdefault(
+            report.date, {"quantity": 0, "revenue": 0.0, "customers": 0}
+        )
+        day["quantity"] += report_quantity
+        day["revenue"] += report_revenue
+        day["customers"] += report.customers_count
+
+        for item in report.items:
+            line = categories.setdefault(
+                item.category_id,
+                {
+                    "name": item.name,
+                    "is_liquid": item.is_liquid,
+                    "quantity": 0,
+                    "revenue": 0.0,
+                    "cost": 0.0,
+                },
+            )
+            line["quantity"] += item.quantity
+            line["revenue"] += item.revenue
+            line["cost"] += item.quantity * item.purchase_price_snapshot
+
+    return PeriodSummary(
+        kind=kind,
+        start=start,
+        end=end,
+        lines=tuple(
+            PeriodLine(
+                category_id=category_id,
+                name=line["name"],
+                is_liquid=line["is_liquid"],
+                quantity=line["quantity"],
+                revenue=line["revenue"],
+                cost=line["cost"],
+            )
+            for category_id, line in categories.items()
+        ),
+        days=tuple(
+            DayLine(
+                report_date=dates.from_db(report_date),
+                quantity=day["quantity"],
+                revenue=day["revenue"],
+                customers_count=day["customers"],
+            )
+            for report_date, day in sorted(days.items())
+        ),
+        customers_count=sum(day["customers"] for day in days.values()),
+        salary_amount=salary_amount,
+        bonus=bonus,
+        city_name=city_name,
+        salary_rate=rates.pop() if len(rates) == 1 else None,
     )
 
 

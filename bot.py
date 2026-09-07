@@ -27,6 +27,8 @@ COMMANDS = (
     BotCommand(command="report_today", description="Отчет за сегодня"),
     BotCommand(command="reports", description="Сохраненные отчеты"),
     BotCommand(command="admin", description="Админ-панель"),
+    BotCommand(command="week", description="Отчет за неделю (админ)"),
+    BotCommand(command="month", description="Отчет за месяц (админ)"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 )
 

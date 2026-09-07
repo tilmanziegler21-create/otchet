@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 DB_DATE_FORMAT = "%Y-%m-%d"
 DB_MONTH_FORMAT = "%Y-%m"
@@ -53,6 +53,27 @@ def days_in_month(value: date | str) -> int:
     if isinstance(value, str):
         value = from_db(value)
     return monthrange(value.year, value.month)[1]
+
+
+def week_bounds(value: date) -> tuple[date, date]:
+    """Календарная неделя понедельник–воскресенье, в которую попала дата."""
+    start = value - timedelta(days=value.weekday())
+    return start, start + timedelta(days=6)
+
+
+def shift_week(value: date, weeks: int) -> date:
+    return value + timedelta(weeks=weeks)
+
+
+def month_bounds(value: date) -> tuple[date, date]:
+    """Первое и последнее число месяца, в который попала дата."""
+    start = value.replace(day=1)
+    return start, start.replace(day=days_in_month(value))
+
+
+def format_range(start: date, end: date) -> str:
+    """'01.09–07.09' — период для шапки отчета и кнопок."""
+    return f"{format_short(start)}–{format_short(end)}"
 
 
 def shift_month(value: date, months: int) -> date:

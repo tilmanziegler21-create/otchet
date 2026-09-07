@@ -7,7 +7,14 @@ from html import escape
 from typing import Sequence
 
 from database import SALARY_FIXED, SALARY_MONTHLY, Category, City, ReportBrief
-from services.calculations import BONUS_SHARE, MANAGER_SHARE, ReportSummary
+from services.calculations import (
+    BONUS_SHARE,
+    MANAGER_SHARE,
+    PERIOD_WEEK,
+    PeriodSummary,
+    ReportSummary,
+    SummaryTotals,
+)
 from utils import dates
 from utils.formatting import format_amount, format_money, format_quantity, format_upd
 
@@ -35,31 +42,34 @@ def _header(
     return text
 
 
-def render_full_report(summary: ReportSummary, employee_label: str | None = None) -> str:
-    """Полный финансовый отчет — только для администраторов."""
-    parts: list[str] = [f"<b>{_header(summary.report_date, summary.city_name)}</b>"]
-
-    for line in summary.lines:
-        parts.append(
-            f"<b>{escape(line.name)}:</b>\n\n"
-            f"Количество — {format_quantity(line.quantity)}\n"
-            f"Выручка — {format_money(line.revenue)}\n"
-            f"Средний чек — {format_money(line.average_check)}\n"
-            f"Себестоимость — {format_money(line.cost)}\n"
-            f"Чистая прибыль — {format_money(summary.category_profit(line))}"
-        )
-
+def _category_blocks(summary: SummaryTotals) -> list[str]:
+    """Блоки по категориям и по жидкостям — общие для дня и для периода."""
+    parts = [
+        f"<b>{escape(line.name)}:</b>\n\n"
+        f"Количество — {format_quantity(line.quantity)}\n"
+        f"Выручка — {format_money(line.revenue)}\n"
+        f"Средний чек — {format_money(line.average_check)}\n"
+        f"Себестоимость — {format_money(line.cost)}\n"
+        f"Чистая прибыль — {format_money(summary.category_profit(line))}"
+        for line in summary.lines
+    ]
     parts.append(
         "<b>ВСЕ ЖИДКОСТИ:</b>\n\n"
         f"Количество — {format_quantity(summary.liquid_quantity)}\n"
         f"Выручка — {format_money(summary.liquid_revenue)}\n"
         f"Средний чек жидкости — {format_money(summary.liquid_average_check)}"
     )
-
     parts.append(
         f"Количество покупателей — {summary.customers_count}\n"
         f"UPD — {format_upd(summary.upd)}"
     )
+    return parts
+
+
+def render_full_report(summary: ReportSummary, employee_label: str | None = None) -> str:
+    """Полный финансовый отчет — только для администраторов."""
+    parts: list[str] = [f"<b>{_header(summary.report_date, summary.city_name)}</b>"]
+    parts.extend(_category_blocks(summary))
 
     rate = format_salary_rate(summary.salary_kind, summary.salary_value)
     parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
@@ -91,6 +101,56 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
     if employee_label:
         parts.append(f"<i>Отчет заполнил: {escape(employee_label)}</i>")
 
+    return "\n\n".join(parts)
+
+
+def period_title(kind: str, start: date, end: date, city_name: str | None = None) -> str:
+    """'📅 Неделя 01.09–07.09 · Рига' или '🗓 Месяц 09.2025 · Рига'."""
+    if kind == PERIOD_WEEK:
+        text = f"📅 Неделя {dates.format_range(start, end)}"
+    else:
+        text = f"🗓 Месяц {dates.format_month(dates.month_key(start))}"
+    if city_name:
+        text += f" · {escape(city_name)}"
+    return text
+
+
+def render_period_report(summary: PeriodSummary) -> str:
+    """Сводка за неделю или месяц по городу — только для администраторов."""
+    title = period_title(summary.kind, summary.start, summary.end, summary.city_name)
+    if not summary.days:
+        return f"<b>{title}</b>\n\nЗа этот период отчетов нет."
+
+    parts: list[str] = [f"<b>{title}</b>"]
+    parts.extend(_category_blocks(summary))
+
+    day_lines = [f"<b>ПО ДНЯМ ({summary.reports_count}):</b>", ""]
+    for day in summary.days:
+        day_lines.append(
+            f"{dates.format_short(day.report_date)} — "
+            f"{format_money(day.revenue)} / {format_quantity(day.quantity)} / "
+            f"{day.customers_count} чел."
+        )
+    parts.append("\n".join(day_lines))
+
+    parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
+    parts.append(
+        f"МЕНЕДЖЕРУ ({_percent_label(MANAGER_SHARE)}) — "
+        f"{format_money(summary.manager_amount)}"
+    )
+    rate = (
+        f" ({format_salary_rate(*summary.salary_rate)})" if summary.salary_rate else ""
+    )
+    parts.append(f"РАБОТНИКАМ{rate} — {format_money(summary.salary_amount)}")
+    if summary.bonus:
+        parts.append(
+            f"ПЕРЕВЫПОЛНЕНИЕ ({_percent_label(BONUS_SHARE)}) — "
+            f"{format_money(summary.bonus)}"
+        )
+    parts.append(f"ОБЩАЯ СЕБЕСТОИМОСТЬ — {format_money(summary.total_cost)}")
+    parts.append(f"<b>ЧИСТАЯ — {format_money(summary.net_profit)}</b>")
+    parts.append(f"CARLGAUSS — {format_money(summary.carlgauss)}")
+    parts.append(f"ОСТАТОК — {format_money(summary.remainder)}")
     return "\n\n".join(parts)
 
 
