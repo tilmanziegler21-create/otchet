@@ -74,6 +74,7 @@ class ReportSummary:
     report_date: date
     customers_count: int
     lines: tuple[CategoryLine, ...]
+    city_name: str | None = None
     report_id: int | None = None
     employee_telegram_id: int | None = None
 
@@ -125,6 +126,7 @@ def build_summary(
     report_date: date,
     customers_count: int,
     lines: Sequence[CategoryLine],
+    city_name: str | None = None,
     report_id: int | None = None,
     employee_telegram_id: int | None = None,
 ) -> ReportSummary:
@@ -132,6 +134,7 @@ def build_summary(
         report_date=report_date,
         customers_count=customers_count,
         lines=tuple(lines),
+        city_name=city_name,
         report_id=report_id,
         employee_telegram_id=employee_telegram_id,
     )
@@ -154,6 +157,7 @@ def summary_from_report(report: Report) -> ReportSummary:
         report_date=dates.from_db(report.date),
         customers_count=report.customers_count,
         lines=lines,
+        city_name=report.city_name,
         report_id=report.id,
         employee_telegram_id=report.employee_telegram_id,
     )

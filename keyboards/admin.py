@@ -6,7 +6,7 @@ from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from database import Category, ReportBrief
+from database import Category, City, ReportBrief
 from utils import dates
 from utils.formatting import format_money
 
@@ -15,6 +15,9 @@ CB_PRICES = "adm:prices"
 CB_PRICE_SET = "adm:price_set"
 CB_PRICE_EDIT = "adm:price_edit"
 CB_CATEGORY_ADD = "adm:cat_add"
+CB_CITIES = "adm:cities"
+CB_CITY_ADD = "adm:city_add"
+CB_CITY_TOGGLE = "adm:city_toggle:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
@@ -48,6 +51,7 @@ def admin_menu() -> InlineKeyboardMarkup:
                     text="🆕 Добавить категорию", callback_data=CB_CATEGORY_ADD
                 )
             ],
+            [InlineKeyboardButton(text="🏙 Города", callback_data=CB_CITIES)],
             [
                 InlineKeyboardButton(
                     text="🗂 Сохраненные отчеты", callback_data=CB_REPORTS
@@ -82,6 +86,23 @@ def categories_menu(
                 )
             ]
         )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cities_menu(cities: Sequence[City]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'🏙' if city.active else '🚫'} {city.name}",
+                callback_data=f"{CB_CITY_TOGGLE}{city.id}",
+            )
+        ]
+        for city in cities
+    ]
+    rows.append(
+        [InlineKeyboardButton(text="➕ Добавить город", callback_data=CB_CITY_ADD)]
+    )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

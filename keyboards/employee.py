@@ -11,7 +11,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from database import ReportBrief
+from database import City, ReportBrief
 from utils import dates
 
 BTN_NEW_REPORT = "🆕 Новый отчет"
@@ -24,8 +24,10 @@ BTN_TODAY_DATE_PREFIX = "📆 Сегодня"
 CB_CONFIRM = "report:confirm"
 CB_EDIT = "report:edit"
 CB_BACK = "report:back"
+CB_CITY = "report:city:"
 CB_EDIT_CATEGORY = "report:edit:cat:"
 CB_EDIT_CUSTOMERS = "report:edit:customers"
+CB_EDIT_CITY = "report:edit:city"
 CB_EMPLOYEE_REPORT = "emp:report:"
 
 
@@ -59,6 +61,20 @@ def date_menu() -> ReplyKeyboardMarkup:
     )
 
 
+def cities_menu(cities: Sequence[City]) -> InlineKeyboardMarkup:
+    """Выбор города в начале отчета — по кнопке на каждый город."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🏙 {city.name}", callback_data=f"{CB_CITY}{city.id}"
+                )
+            ]
+            for city in cities
+        ]
+    )
+
+
 def preview_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -80,6 +96,7 @@ def edit_menu(names: Sequence[str]) -> InlineKeyboardMarkup:
     rows.append(
         [InlineKeyboardButton(text="👥 Покупателей", callback_data=CB_EDIT_CUSTOMERS)]
     )
+    rows.append([InlineKeyboardButton(text="🏙 Город", callback_data=CB_EDIT_CITY)])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

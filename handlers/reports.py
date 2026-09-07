@@ -37,22 +37,24 @@ async def _send_today(message: Message) -> None:
         return
     is_admin = config.is_admin(message.from_user.id)
     report_date = dates.to_db(dates.today())
-    report = await db.get_report_by_date(
+    reports = await db.get_reports_by_date(
         report_date,
         employee_telegram_id=None if is_admin else message.from_user.id,
     )
-    if report is None:
+    if not reports:
         await message.answer(
             f"Отчет за {dates.format_full(report_date)} еще не заполнен."
         )
         return
-    summary = summary_from_report(report)
-    if is_admin:
-        await message.answer(
-            render_full_report(summary, f"ID {report.employee_telegram_id}")
-        )
-    else:
-        await message.answer(render_employee_summary(summary))
+    # По одному сообщению на город.
+    for report in reports:
+        summary = summary_from_report(report)
+        if is_admin:
+            await message.answer(
+                render_full_report(summary, f"ID {report.employee_telegram_id}")
+            )
+        else:
+            await message.answer(render_employee_summary(summary))
 
 
 async def _send_reports_list(message: Message) -> None:

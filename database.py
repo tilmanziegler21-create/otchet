@@ -35,9 +35,16 @@ CREATE TABLE IF NOT EXISTS categories (
     active         INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS cities (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    name   TEXT    NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS daily_reports (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     date                 TEXT    NOT NULL,
+    city_id              INTEGER REFERENCES cities(id),
     employee_telegram_id INTEGER NOT NULL,
     customers_count      INTEGER NOT NULL DEFAULT 0,
     created_at           TEXT    NOT NULL
@@ -68,6 +75,13 @@ class Category:
 
 
 @dataclass(frozen=True)
+class City:
+    id: int
+    name: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class ReportItem:
     category_id: int
     name: str
@@ -81,6 +95,8 @@ class ReportItem:
 class Report:
     id: int
     date: str
+    city_id: int | None
+    city_name: str | None
     employee_telegram_id: int
     customers_count: int
     created_at: str
@@ -91,6 +107,7 @@ class Report:
 class ReportBrief:
     id: int
     date: str
+    city_name: str | None
     employee_telegram_id: int
     customers_count: int
     total_quantity: int
@@ -102,12 +119,23 @@ def _connect() -> aiosqlite.Connection:
     return connection
 
 
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Догоняет схему в базах, созданных предыдущими версиями бота."""
+    cursor = await db.execute("PRAGMA table_info(daily_reports)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "city_id" not in columns:
+        await db.execute(
+            "ALTER TABLE daily_reports ADD COLUMN city_id INTEGER REFERENCES cities(id)"
+        )
+
+
 async def init_db() -> None:
     """Создает схему, добавляет категории по умолчанию и синхронизирует админов."""
     config.db_path.parent.mkdir(parents=True, exist_ok=True)
     async with _connect() as db:
         await db.execute("PRAGMA foreign_keys = ON")
         await db.executescript(SCHEMA_SCRIPT)
+        await _migrate(db)
         for name, price, is_liquid in DEFAULT_CATEGORIES:
             await db.execute(
                 "INSERT OR IGNORE INTO categories (name, purchase_price, is_liquid, active) "
@@ -216,11 +244,69 @@ async def set_purchase_price(category_id: int, purchase_price: float) -> None:
         await db.commit()
 
 
+# --------------------------------------------------------------- cities
+
+
+def _city_from_row(row: aiosqlite.Row) -> City:
+    return City(id=row["id"], name=row["name"], active=bool(row["active"]))
+
+
+async def get_cities(only_active: bool = True) -> list[City]:
+    query = "SELECT id, name, active FROM cities"
+    if only_active:
+        query += " WHERE active = 1"
+    query += " ORDER BY name COLLATE NOCASE"
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(query)
+        rows = await cursor.fetchall()
+    return [_city_from_row(row) for row in rows]
+
+
+async def get_city(city_id: int) -> City | None:
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, name, active FROM cities WHERE id = ?", (city_id,)
+        )
+        row = await cursor.fetchone()
+    return _city_from_row(row) if row else None
+
+
+async def get_city_by_name(name: str) -> City | None:
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, name, active FROM cities WHERE name = ? COLLATE NOCASE",
+            (name,),
+        )
+        row = await cursor.fetchone()
+    return _city_from_row(row) if row else None
+
+
+async def add_city(name: str) -> int:
+    async with _connect() as db:
+        cursor = await db.execute(
+            "INSERT INTO cities (name, active) VALUES (?, 1)", (name,)
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def set_city_active(city_id: int, active: bool) -> None:
+    async with _connect() as db:
+        await db.execute(
+            "UPDATE cities SET active = ? WHERE id = ?", (int(active), city_id)
+        )
+        await db.commit()
+
+
 # -------------------------------------------------------------- reports
 
 
 async def save_report(
     report_date: str,
+    city_id: int | None,
     employee_telegram_id: int,
     customers_count: int,
     items: Sequence[tuple[int, int, float, float]],
@@ -229,10 +315,12 @@ async def save_report(
     async with _connect() as db:
         await db.execute("PRAGMA foreign_keys = ON")
         cursor = await db.execute(
-            "INSERT INTO daily_reports (date, employee_telegram_id, customers_count, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO daily_reports "
+            "(date, city_id, employee_telegram_id, customers_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 report_date,
+                city_id,
                 employee_telegram_id,
                 customers_count,
                 datetime.now().isoformat(timespec="seconds"),
@@ -276,6 +364,8 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
     return Report(
         id=row["id"],
         date=row["date"],
+        city_id=row["city_id"],
+        city_name=row["city_name"],
         employee_telegram_id=row["employee_telegram_id"],
         customers_count=int(row["customers_count"]),
         created_at=row["created_at"],
@@ -283,65 +373,78 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
     )
 
 
+_REPORT_SELECT = (
+    "SELECT r.id, r.date, r.city_id, ci.name AS city_name, "
+    "       r.employee_telegram_id, r.customers_count, r.created_at "
+    "FROM daily_reports AS r "
+    "LEFT JOIN cities AS ci ON ci.id = r.city_id "
+)
+
+
 async def get_report(report_id: int) -> Report | None:
     async with _connect() as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, date, employee_telegram_id, customers_count, created_at "
-            "FROM daily_reports WHERE id = ?",
-            (report_id,),
-        )
+        cursor = await db.execute(_REPORT_SELECT + "WHERE r.id = ?", (report_id,))
         row = await cursor.fetchone()
         if row is None:
             return None
         return await _fetch_report(db, row)
 
 
-async def get_report_by_date(
+async def get_reports_by_date(
     report_date: str, employee_telegram_id: int | None = None
-) -> Report | None:
-    """Последний отчет за дату (при повторных отчетах — самый свежий)."""
-    query = (
-        "SELECT id, date, employee_telegram_id, customers_count, created_at "
-        "FROM daily_reports WHERE date = ?"
-    )
+) -> list[Report]:
+    """Все отчеты за дату — по одному на город."""
+    query = _REPORT_SELECT + "WHERE r.date = ?"
     params: list[object] = [report_date]
     if employee_telegram_id is not None:
-        query += " AND employee_telegram_id = ?"
+        query += " AND r.employee_telegram_id = ?"
         params.append(employee_telegram_id)
-    query += " ORDER BY id DESC LIMIT 1"
+    query += " ORDER BY ci.name COLLATE NOCASE, r.id"
     async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return await _fetch_report(db, row)
+        rows = await cursor.fetchall()
+        return [await _fetch_report(db, row) for row in rows]
 
 
-async def count_reports_by_date(report_date: str) -> int:
+async def count_reports_by_date(report_date: str, city_id: int | None = None) -> int:
+    query = "SELECT COUNT(*) FROM daily_reports WHERE date = ?"
+    params: list[object] = [report_date]
+    if city_id is not None:
+        query += " AND city_id = ?"
+        params.append(city_id)
     async with _connect() as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM daily_reports WHERE date = ?", (report_date,)
-        )
+        cursor = await db.execute(query, params)
         row = await cursor.fetchone()
     return int(row[0]) if row else 0
 
 
 async def list_reports(
-    limit: int = 10, offset: int = 0, employee_telegram_id: int | None = None
+    limit: int = 10,
+    offset: int = 0,
+    employee_telegram_id: int | None = None,
+    city_id: int | None = None,
 ) -> list[ReportBrief]:
     query = (
-        "SELECT r.id, r.date, r.employee_telegram_id, r.customers_count, "
+        "SELECT r.id, r.date, ci.name AS city_name, r.employee_telegram_id, "
+        "       r.customers_count, "
         "       COALESCE(SUM(i.quantity), 0) AS total_quantity, "
         "       COALESCE(SUM(i.revenue), 0)  AS total_revenue "
         "FROM daily_reports AS r "
+        "LEFT JOIN cities AS ci ON ci.id = r.city_id "
         "LEFT JOIN daily_report_items AS i ON i.report_id = r.id "
     )
+    conditions: list[str] = []
     params: list[object] = []
     if employee_telegram_id is not None:
-        query += "WHERE r.employee_telegram_id = ? "
+        conditions.append("r.employee_telegram_id = ?")
         params.append(employee_telegram_id)
+    if city_id is not None:
+        conditions.append("r.city_id = ?")
+        params.append(city_id)
+    if conditions:
+        query += "WHERE " + " AND ".join(conditions) + " "
     query += "GROUP BY r.id ORDER BY r.date DESC, r.id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     async with _connect() as db:
@@ -352,6 +455,7 @@ async def list_reports(
         ReportBrief(
             id=row["id"],
             date=row["date"],
+            city_name=row["city_name"],
             employee_telegram_id=row["employee_telegram_id"],
             customers_count=int(row["customers_count"]),
             total_quantity=int(row["total_quantity"]),

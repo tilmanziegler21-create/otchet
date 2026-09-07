@@ -7,15 +7,25 @@ from html import escape
 from typing import Sequence
 
 from config import config
-from database import Category, ReportBrief
+from database import Category, City, ReportBrief
 from services.calculations import ReportSummary
 from utils import dates
 from utils.formatting import format_money, format_quantity, format_upd
 
 
+def _header(
+    report_date: date | str, city_name: str | None, full_date: bool = False
+) -> str:
+    """'01.09 · Рига' — город в шапке, чтобы отчеты точек не путались."""
+    text = dates.format_full(report_date) if full_date else dates.format_short(report_date)
+    if city_name:
+        text += f" · {escape(city_name)}"
+    return text
+
+
 def render_full_report(summary: ReportSummary, employee_label: str | None = None) -> str:
     """Полный финансовый отчет — только для администраторов."""
-    parts: list[str] = [f"<b>{dates.format_short(summary.report_date)}</b>"]
+    parts: list[str] = [f"<b>{_header(summary.report_date, summary.city_name)}</b>"]
 
     for line in summary.lines:
         parts.append(
@@ -53,7 +63,7 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
 def render_employee_result(summary: ReportSummary) -> str:
     """Безопасная версия для работника — без закупок, себестоимости и прибыли."""
     return (
-        f"Отчет за {dates.format_short(summary.report_date)} сохранен ✅\n\n"
+        f"Отчет за {_header(summary.report_date, summary.city_name)} сохранен ✅\n\n"
         f"Продано жидкостей: {summary.liquid_quantity}\n"
         f"UPD: {format_upd(summary.upd)}\n"
         f"Общая выручка: {format_money(summary.total_revenue)}"
@@ -62,7 +72,8 @@ def render_employee_result(summary: ReportSummary) -> str:
 
 def render_employee_summary(summary: ReportSummary) -> str:
     """Безопасный просмотр сохраненного отчета работником."""
-    lines = [f"<b>Отчет за {dates.format_full(summary.report_date)}</b>", ""]
+    header = _header(summary.report_date, summary.city_name, full_date=True)
+    lines = [f"<b>Отчет за {header}</b>", ""]
     for line in summary.lines:
         lines.append(
             f"{escape(line.name)} — {format_quantity(line.quantity)} / "
@@ -84,9 +95,11 @@ def render_preview(
     report_date: date,
     rows: Sequence[tuple[str, int, float]],
     customers_count: int,
+    city_name: str | None = None,
 ) -> str:
     """Предпросмотр перед сохранением (данные работника, без экономики)."""
-    lines = [f"<b>Проверьте отчет за {dates.format_full(report_date)}</b>", ""]
+    header = _header(report_date, city_name, full_date=True)
+    lines = [f"<b>Проверьте отчет за {header}</b>", ""]
     for name, quantity, revenue in rows:
         lines.append(
             f"{escape(name)} — {format_quantity(quantity)} / {format_money(revenue)}"
@@ -111,13 +124,28 @@ def render_prices(categories: Sequence[Category]) -> str:
     return "\n".join(lines)
 
 
+def render_cities(cities: Sequence[City]) -> str:
+    if not cities:
+        return (
+            "Городов пока нет.\n\n"
+            "Пока не добавлен ни один город, работник не сможет отправить отчет."
+        )
+    lines = ["<b>Города</b>", ""]
+    for city in cities:
+        status = "включен" if city.active else "выключен"
+        lines.append(f"🏙 {escape(city.name)} — {status}")
+    lines.append("")
+    lines.append("Нажмите на город, чтобы включить или выключить его.")
+    return "\n".join(lines)
+
+
 def render_reports_list(reports: Sequence[ReportBrief], title: str) -> str:
     if not reports:
         return "Сохраненных отчетов пока нет."
     lines = [f"<b>{escape(title)}</b>", ""]
     for report in reports:
         lines.append(
-            f"{dates.format_full(report.date)} — "
+            f"{_header(report.date, report.city_name, full_date=True)} — "
             f"{format_quantity(report.total_quantity)} / "
             f"{format_money(report.total_revenue)}"
         )

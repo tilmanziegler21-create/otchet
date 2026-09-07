@@ -19,6 +19,9 @@ from keyboards.admin import (
     ACTION_PRICE_EDIT,
     ACTION_PRICE_SET,
     CB_CATEGORY_ADD,
+    CB_CITIES,
+    CB_CITY_ADD,
+    CB_CITY_TOGGLE,
     CB_CLOSE,
     CB_LIQUID_PREFIX,
     CB_MENU,
@@ -31,12 +34,14 @@ from keyboards.admin import (
     admin_menu,
     back_menu,
     categories_menu,
+    cities_menu,
     liquid_menu,
     reports_menu,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
 from services.calculations import summary_from_report
 from services.report_builder import (
+    render_cities,
     render_full_report,
     render_prices,
     render_reports_list,
@@ -59,6 +64,7 @@ class AdminStates(StatesGroup):
     waiting_category_name = State()
     waiting_category_price = State()
     waiting_category_is_liquid = State()
+    waiting_city_name = State()
 
 
 # ------------------------------------------------------------ вход в панель
@@ -251,6 +257,70 @@ async def add_category_finish(callback: CallbackQuery, state: FSMContext) -> Non
             reply_markup=back_menu(),
         )
     await callback.answer("Категория появится в следующем отчете")
+
+
+# ----------------------------------------------------------------- города
+
+
+@router.callback_query(F.data == CB_CITIES, IsAdmin())
+async def show_cities(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    cities = await db.get_cities(only_active=False)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            render_cities(cities), reply_markup=cities_menu(cities)
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == CB_CITY_ADD, IsAdmin())
+async def add_city_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminStates.waiting_city_name)
+    if callback.message is not None:
+        await callback.message.edit_text("Введите название города:")
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_city_name, IsAdmin(), F.text)
+async def add_city_finish(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name or len(name) > 64:
+        await message.answer("Название должно быть от 1 до 64 символов:")
+        return
+    if await db.get_city_by_name(name):
+        await state.clear()
+        await message.answer(
+            f"Город «{escape(name)}» уже существует.", reply_markup=admin_menu()
+        )
+        return
+    await db.add_city(name)
+    await state.clear()
+    cities = await db.get_cities(only_active=False)
+    await message.answer(
+        f"✅ Город «{escape(name)}» добавлен.\n\n" + render_cities(cities),
+        reply_markup=cities_menu(cities),
+    )
+
+
+@router.callback_query(F.data.startswith(CB_CITY_TOGGLE), IsAdmin())
+async def toggle_city(callback: CallbackQuery) -> None:
+    raw_id = (callback.data or "")[len(CB_CITY_TOGGLE) :]
+    if not raw_id.isdigit():
+        await callback.answer("Некорректный город", show_alert=True)
+        return
+    city = await db.get_city(int(raw_id))
+    if city is None:
+        await callback.answer("Город не найден", show_alert=True)
+        return
+    await db.set_city_active(city.id, not city.active)
+    cities = await db.get_cities(only_active=False)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            render_cities(cities), reply_markup=cities_menu(cities)
+        )
+    await callback.answer(
+        f"{city.name}: {'выключен' if city.active else 'включен'}"
+    )
 
 
 # ------------------------------------------------------- сохраненные отчеты

@@ -15,11 +15,14 @@ from keyboards.employee import (
     BTN_NEW_REPORT,
     BTN_TODAY_DATE_PREFIX,
     CB_BACK,
+    CB_CITY,
     CB_CONFIRM,
     CB_EDIT,
     CB_EDIT_CATEGORY,
+    CB_EDIT_CITY,
     CB_EDIT_CUSTOMERS,
     cancel_menu,
+    cities_menu,
     date_menu,
     edit_menu,
     main_menu,
@@ -35,6 +38,7 @@ router = Router(name="employee")
 
 
 class NewReport(StatesGroup):
+    waiting_city = State()
     waiting_date = State()
     waiting_quantity = State()
     waiting_revenue = State()
@@ -49,6 +53,30 @@ def _employee_label(user: User) -> str:
         parts.append(f"@{user.username}")
     parts.append(f"ID {user.id}")
     return " / ".join(parts)
+
+
+async def _ask_city(message: Message, state: FSMContext) -> bool:
+    """Показывает список городов. False — городов нет, отчет начать нельзя."""
+    cities = await db.get_cities(only_active=True)
+    if not cities:
+        await message.answer(
+            "Города пока не настроены — обратитесь к администратору.",
+            reply_markup=main_menu(config.is_admin(message.chat.id)),
+        )
+        return False
+    await state.set_state(NewReport.waiting_city)
+    await message.answer("Выберите город:", reply_markup=cities_menu(cities))
+    return True
+
+
+async def _ask_date(message: Message, state: FSMContext) -> None:
+    await state.set_state(NewReport.waiting_date)
+    await message.answer(
+        "За какую дату отчет?\n\n"
+        "Нажмите кнопку с сегодняшней датой или введите дату вручную "
+        "в формате ДД.ММ или ДД.ММ.ГГГГ.",
+        reply_markup=date_menu(),
+    )
 
 
 async def _ask_quantity(message: Message, state: FSMContext) -> None:
@@ -96,7 +124,10 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
         for index, category in enumerate(data["categories"])
     ]
     text = render_preview(
-        dates.from_db(data["date"]), rows, int(data["customers_count"])
+        dates.from_db(data["date"]),
+        rows,
+        int(data["customers_count"]),
+        city_name=data.get("city_name"),
     )
     await state.set_state(NewReport.preview)
     await message.answer(text, reply_markup=preview_menu())
@@ -114,7 +145,6 @@ async def start_new_report(message: Message, state: FSMContext) -> None:
         )
         return
     await state.clear()
-    await state.set_state(NewReport.waiting_date)
     await state.update_data(
         categories=[
             {"id": c.id, "name": c.name, "is_liquid": c.is_liquid} for c in categories
@@ -123,12 +153,29 @@ async def start_new_report(message: Message, state: FSMContext) -> None:
         index=0,
         edit_target=None,
     )
-    await message.answer(
-        "За какую дату отчет?\n\n"
-        "Нажмите кнопку с сегодняшней датой или введите дату вручную "
-        "в формате ДД.ММ или ДД.ММ.ГГГГ.",
-        reply_markup=date_menu(),
-    )
+    await _ask_city(message, state)
+
+
+@router.callback_query(NewReport.waiting_city, F.data.startswith(CB_CITY))
+async def process_city(callback: CallbackQuery, state: FSMContext) -> None:
+    raw_id = (callback.data or "")[len(CB_CITY) :]
+    if not raw_id.isdigit():
+        await callback.answer("Некорректный город", show_alert=True)
+        return
+    city = await db.get_city(int(raw_id))
+    if city is None or not city.active:
+        await callback.answer("Город недоступен", show_alert=True)
+        return
+
+    await state.update_data(city_id=city.id, city_name=city.name)
+    data = await state.get_data()
+    if callback.message is not None:
+        await callback.message.edit_text(f"Город: <b>{escape(city.name)}</b>")
+        if data.get("edit_target"):
+            await _show_preview(callback.message, state)
+        else:
+            await _ask_date(callback.message, state)
+    await callback.answer()
 
 
 @router.message(NewReport.waiting_date, F.text)
@@ -146,11 +193,15 @@ async def process_date(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(date=dates.to_db(report_date))
-    existing = await db.count_reports_by_date(dates.to_db(report_date))
+    data = await state.get_data()
+    existing = await db.count_reports_by_date(
+        dates.to_db(report_date), city_id=data.get("city_id")
+    )
     if existing:
+        city_label = data.get("city_name") or "этот город"
         await message.answer(
-            f"⚠️ Отчет за {dates.format_full(report_date)} уже есть в базе. "
-            "Новый отчет будет сохранен отдельно."
+            f"⚠️ Отчет за {dates.format_full(report_date)} по {city_label} "
+            "уже есть в базе. Новый отчет будет сохранен отдельно."
         )
     await message.answer(f"Дата отчета: {dates.format_full(report_date)}")
     await _ask_quantity(message, state)
@@ -257,6 +308,7 @@ async def confirm_report(
 
     report_id = await db.save_report(
         report_date=report_date,
+        city_id=data.get("city_id"),
         employee_telegram_id=callback.from_user.id,
         customers_count=customers_count,
         items=items,
@@ -265,6 +317,7 @@ async def confirm_report(
         report_date=dates.from_db(report_date),
         customers_count=customers_count,
         lines=lines,
+        city_name=data.get("city_name"),
         report_id=report_id,
         employee_telegram_id=callback.from_user.id,
     )
@@ -318,6 +371,15 @@ async def edit_category(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(NewReport.choose_edit, F.data == CB_EDIT_CITY)
+async def edit_city(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(edit_target="city")
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await _ask_city(callback.message, state)
+    await callback.answer()
+
+
 @router.callback_query(NewReport.choose_edit, F.data == CB_EDIT_CUSTOMERS)
 async def edit_customers(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(edit_target="customers")
@@ -346,7 +408,8 @@ async def wrong_input_type(message: Message) -> None:
     await message.answer("Отправьте ответ текстом или нажмите «❌ Отмена».")
 
 
+@router.message(NewReport.waiting_city)
 @router.message(NewReport.preview)
 @router.message(NewReport.choose_edit)
 async def use_buttons(message: Message) -> None:
-    await message.answer("Воспользуйтесь кнопками под сообщением с отчетом.")
+    await message.answer("Воспользуйтесь кнопками под сообщением.")
