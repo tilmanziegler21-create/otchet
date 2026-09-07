@@ -21,6 +21,8 @@ from keyboards.admin import (
     CB_CATEGORY_ADD,
     CB_CITIES,
     CB_CITY_ADD,
+    CB_CITY_CARD,
+    CB_CITY_SALARY,
     CB_CITY_TOGGLE,
     CB_CLOSE,
     CB_LIQUID_PREFIX,
@@ -31,17 +33,21 @@ from keyboards.admin import (
     CB_PRICES,
     CB_REPORT_PREFIX,
     CB_REPORTS,
+    CB_SALARY_KIND,
     admin_menu,
     back_menu,
     categories_menu,
     cities_menu,
+    city_card_menu,
     liquid_menu,
     reports_menu,
+    salary_kind_menu,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
 from services.calculations import summary_from_report
 from services.report_builder import (
     render_cities,
+    render_city_card,
     render_full_report,
     render_prices,
     render_reports_list,
@@ -65,6 +71,7 @@ class AdminStates(StatesGroup):
     waiting_category_price = State()
     waiting_category_is_liquid = State()
     waiting_city_name = State()
+    waiting_salary_value = State()
 
 
 # ------------------------------------------------------------ вход в панель
@@ -302,24 +309,110 @@ async def add_city_finish(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data.startswith(CB_CITY_TOGGLE), IsAdmin())
-async def toggle_city(callback: CallbackQuery) -> None:
-    raw_id = (callback.data or "")[len(CB_CITY_TOGGLE) :]
+async def _resolve_city(callback: CallbackQuery, prefix: str) -> db.City | None:
+    raw_id = (callback.data or "")[len(prefix) :]
     if not raw_id.isdigit():
         await callback.answer("Некорректный город", show_alert=True)
+        return None
+    city = await db.get_city(int(raw_id))
+    if city is None:
+        await callback.answer("Город не найден", show_alert=True)
+        return None
+    return city
+
+
+@router.callback_query(F.data.startswith(CB_CITY_CARD), IsAdmin())
+async def show_city_card(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    city = await _resolve_city(callback, CB_CITY_CARD)
+    if city is None:
+        return
+    if callback.message is not None:
+        await callback.message.edit_text(
+            render_city_card(city), reply_markup=city_card_menu(city)
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_CITY_TOGGLE), IsAdmin())
+async def toggle_city(callback: CallbackQuery) -> None:
+    city = await _resolve_city(callback, CB_CITY_TOGGLE)
+    if city is None:
+        return
+    await db.set_city_active(city.id, not city.active)
+    updated = await db.get_city(city.id)
+    if callback.message is not None and updated is not None:
+        await callback.message.edit_text(
+            render_city_card(updated), reply_markup=city_card_menu(updated)
+        )
+    await callback.answer(
+        f"{city.name}: {'выключен' if city.active else 'включен'}"
+    )
+
+
+@router.callback_query(F.data.startswith(CB_CITY_SALARY), IsAdmin())
+async def choose_salary_kind(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    city = await _resolve_city(callback, CB_CITY_SALARY)
+    if city is None:
+        return
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🏙 <b>{escape(city.name)}</b>\n\n"
+            "Как считать «минус работникам» в этом городе?",
+            reply_markup=salary_kind_menu(city.id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_SALARY_KIND), IsAdmin())
+async def ask_salary_value(callback: CallbackQuery, state: FSMContext) -> None:
+    payload = (callback.data or "")[len(CB_SALARY_KIND) :]
+    kind, _, raw_id = payload.partition(":")
+    if kind not in (db.SALARY_PERCENT, db.SALARY_FIXED) or not raw_id.isdigit():
+        await callback.answer("Некорректный выбор", show_alert=True)
         return
     city = await db.get_city(int(raw_id))
     if city is None:
         await callback.answer("Город не найден", show_alert=True)
         return
-    await db.set_city_active(city.id, not city.active)
-    cities = await db.get_cities(only_active=False)
+
+    await state.set_state(AdminStates.waiting_salary_value)
+    await state.update_data(salary_city_id=city.id, salary_kind=kind)
+    prompt = (
+        "Введите процент от общей выручки (например 30 или 27,5):"
+        if kind == db.SALARY_PERCENT
+        else f"Введите фиксированную сумму за день (в {config.currency}):"
+    )
     if callback.message is not None:
-        await callback.message.edit_text(
-            render_cities(cities), reply_markup=cities_menu(cities)
+        await callback.message.edit_text(f"🏙 <b>{escape(city.name)}</b>\n\n{prompt}")
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_salary_value, IsAdmin(), F.text)
+async def save_salary_value(message: Message, state: FSMContext) -> None:
+    value = parse_amount(message.text)
+    data = await state.get_data()
+    kind = data["salary_kind"]
+    if value is None or (kind == db.SALARY_PERCENT and value > 100):
+        hint = (
+            "Нужен процент от 0 до 100, например 30 или 27,5:"
+            if kind == db.SALARY_PERCENT
+            else "Нужна сумма, например 50 или 47,50:"
         )
-    await callback.answer(
-        f"{city.name}: {'выключен' if city.active else 'включен'}"
+        await message.answer(hint)
+        return
+
+    city_id = int(data["salary_city_id"])
+    await db.set_city_salary(city_id, kind, value)
+    await state.clear()
+    city = await db.get_city(city_id)
+    if city is None:
+        await message.answer("Город не найден.", reply_markup=admin_menu())
+        return
+    await message.answer(
+        "✅ Ставка сохранена.\n\n" + render_city_card(city),
+        reply_markup=city_card_menu(city),
     )
 
 

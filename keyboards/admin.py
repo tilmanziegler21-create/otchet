@@ -17,7 +17,10 @@ CB_PRICE_EDIT = "adm:price_edit"
 CB_CATEGORY_ADD = "adm:cat_add"
 CB_CITIES = "adm:cities"
 CB_CITY_ADD = "adm:city_add"
+CB_CITY_CARD = "adm:city:"
 CB_CITY_TOGGLE = "adm:city_toggle:"
+CB_CITY_SALARY = "adm:city_salary:"
+CB_SALARY_KIND = "adm:salary_kind:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
@@ -95,7 +98,7 @@ def cities_menu(cities: Sequence[City]) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text=f"{'🏙' if city.active else '🚫'} {city.name}",
-                callback_data=f"{CB_CITY_TOGGLE}{city.id}",
+                callback_data=f"{CB_CITY_CARD}{city.id}",
             )
         ]
         for city in cities
@@ -105,6 +108,50 @@ def cities_menu(cities: Sequence[City]) -> InlineKeyboardMarkup:
     )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def city_card_menu(city: City) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💵 Минус работникам",
+                    callback_data=f"{CB_CITY_SALARY}{city.id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 Выключить город" if city.active else "✅ Включить город",
+                    callback_data=f"{CB_CITY_TOGGLE}{city.id}",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ К городам", callback_data=CB_CITIES)],
+        ]
+    )
+
+
+def salary_kind_menu(city_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Процент от выручки",
+                    callback_data=f"{CB_SALARY_KIND}percent:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💶 Фиксированная сумма за день",
+                    callback_data=f"{CB_SALARY_KIND}fixed:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад", callback_data=f"{CB_CITY_CARD}{city_id}"
+                )
+            ],
+        ]
+    )
 
 
 def liquid_menu() -> InlineKeyboardMarkup:

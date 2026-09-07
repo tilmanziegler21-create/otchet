@@ -30,32 +30,15 @@ def _parse_admin_ids(raw: str | None) -> tuple[int, ...]:
     return tuple(dict.fromkeys(ids))
 
 
-def _parse_float(raw: str | None, default: float) -> float:
-    if not raw:
-        return default
-    try:
-        return float(raw.replace(",", "."))
-    except ValueError:
-        return default
-
-
 @dataclass(frozen=True)
 class Config:
     bot_token: str
     admin_ids: tuple[int, ...]
     db_path: Path
-    tax_rate: float
     currency: str
 
     def is_admin(self, telegram_id: int | None) -> bool:
         return telegram_id is not None and telegram_id in self.admin_ids
-
-    @property
-    def tax_label(self) -> str:
-        """Подпись для строки отчета: '30%'."""
-        percent = self.tax_rate * 100
-        text = f"{percent:.2f}".rstrip("0").rstrip(".")
-        return f"{text}%"
 
 
 def load_config() -> Config:
@@ -66,7 +49,6 @@ def load_config() -> Config:
         bot_token=(os.getenv("BOT_TOKEN") or "").strip(),
         admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
         db_path=db_path,
-        tax_rate=_parse_float(os.getenv("TAX_RATE"), 0.30),
         currency=(os.getenv("CURRENCY") or "€").strip(),
     )
 

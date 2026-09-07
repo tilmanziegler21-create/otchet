@@ -112,6 +112,20 @@ async def _ask_customers(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _next_step(message: Message, state: FSMContext) -> None:
+    """Категория заполнена: следующая категория, покупатели или предпросмотр."""
+    data = await state.get_data()
+    if data.get("edit_target"):
+        await _show_preview(message, state)
+        return
+    next_index = data["index"] + 1
+    if next_index < len(data["categories"]):
+        await state.update_data(index=next_index)
+        await _ask_quantity(message, state)
+    else:
+        await _ask_customers(message, state)
+
+
 async def _show_preview(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.update_data(edit_target=None)
@@ -221,6 +235,19 @@ async def process_quantity(message: Message, state: FSMContext) -> None:
     key = str(data["index"])
     entry = dict(entries.get(key, {}))
     entry["quantity"] = quantity
+    category_name = data["categories"][data["index"]]["name"]
+
+    if quantity == 0:
+        # Нечего продавать — выручку не спрашиваем.
+        entry["revenue"] = 0.0
+        entries[key] = entry
+        await state.update_data(entries=entries)
+        await message.answer(
+            f"{escape(category_name)}: продаж нет, выручку не спрашиваю."
+        )
+        await _next_step(message, state)
+        return
+
     entries[key] = entry
     await state.update_data(entries=entries)
     await _ask_revenue(message, state)
@@ -243,17 +270,7 @@ async def process_revenue(message: Message, state: FSMContext) -> None:
     entry["revenue"] = revenue
     entries[key] = entry
     await state.update_data(entries=entries)
-
-    if data.get("edit_target"):
-        await _show_preview(message, state)
-        return
-
-    next_index = data["index"] + 1
-    if next_index < len(data["categories"]):
-        await state.update_data(index=next_index)
-        await _ask_quantity(message, state)
-    else:
-        await _ask_customers(message, state)
+    await _next_step(message, state)
 
 
 @router.message(NewReport.waiting_customers, F.text)
@@ -306,18 +323,28 @@ async def confirm_report(
             )
         )
 
+    # Ставку работникам фиксируем на момент отчета — как и закупочные цены.
+    city_id = data.get("city_id")
+    city = await db.get_city(city_id) if city_id else None
+    salary_kind = city.salary_kind if city else db.SALARY_PERCENT
+    salary_value = city.salary_value if city else 0.0
+
     report_id = await db.save_report(
         report_date=report_date,
-        city_id=data.get("city_id"),
+        city_id=city_id,
         employee_telegram_id=callback.from_user.id,
         customers_count=customers_count,
+        salary_kind=salary_kind,
+        salary_value=salary_value,
         items=items,
     )
     summary = build_summary(
         report_date=dates.from_db(report_date),
         customers_count=customers_count,
         lines=lines,
-        city_name=data.get("city_name"),
+        city_name=city.name if city else data.get("city_name"),
+        salary_kind=salary_kind,
+        salary_value=salary_value,
         report_id=report_id,
         employee_telegram_id=callback.from_user.id,
     )

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal
+
 from config import config
+
+
+def round_money(value: float, decimals: int = 2) -> float:
+    """Округление до цента как в кассе: половинка всегда вверх."""
+    quant = Decimal(1).scaleb(-decimals)
+    return float(Decimal(str(float(value))).quantize(quant, rounding=ROUND_HALF_UP))
 
 
 def format_amount(value: float, decimals: int = 2) -> str:
     """1234.5 -> '1234,50', 571.0 -> '571'."""
-    rounded = round(float(value) + 0.0, decimals)
+    rounded = round_money(value, decimals)
     text = f"{rounded:.{decimals}f}"
     if decimals > 0:
         whole, _, fraction = text.partition(".")

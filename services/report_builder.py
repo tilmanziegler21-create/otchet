@@ -6,11 +6,17 @@ from datetime import date
 from html import escape
 from typing import Sequence
 
-from config import config
-from database import Category, City, ReportBrief
+from database import SALARY_FIXED, Category, City, ReportBrief
 from services.calculations import ReportSummary
 from utils import dates
-from utils.formatting import format_money, format_quantity, format_upd
+from utils.formatting import format_amount, format_money, format_quantity, format_upd
+
+
+def format_salary_rate(salary_kind: str, salary_value: float) -> str:
+    """'30%' или '50€ фикс' — как задана ставка работникам в городе."""
+    if salary_kind == SALARY_FIXED:
+        return f"{format_money(salary_value)} фикс"
+    return f"{format_amount(salary_value, 2)}%"
 
 
 def _header(
@@ -34,7 +40,7 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
             f"Выручка — {format_money(line.revenue)}\n"
             f"Средний чек — {format_money(line.average_check)}\n"
             f"Себестоимость — {format_money(line.cost)}\n"
-            f"Чистая прибыль — {format_money(line.net_profit)}"
+            f"Чистая прибыль — {format_money(summary.category_profit(line))}"
         )
 
     parts.append(
@@ -49,10 +55,13 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
         f"UPD — {format_upd(summary.upd)}"
     )
 
+    rate = format_salary_rate(summary.salary_kind, summary.salary_value)
     parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
-    parts.append(f"{config.tax_label} — {format_money(summary.tax_amount)}")
+    parts.append(f"РАБОТНИКАМ ({rate}) — {format_money(summary.salary_amount)}")
     parts.append(f"ОБЩАЯ СЕБЕСТОИМОСТЬ — {format_money(summary.total_cost)}")
-    parts.append(f"<b>ЧИСТАЯ ПРИБЫЛЬ — {format_money(summary.net_profit)}</b>")
+    parts.append(f"<b>ЧИСТАЯ — {format_money(summary.net_profit)}</b>")
+    parts.append(f"CARLGAUSS — {format_money(summary.carlgauss)}")
+    parts.append(f"ОСТАТОК — {format_money(summary.remainder)}")
 
     if employee_label:
         parts.append(f"<i>Отчет заполнил: {escape(employee_label)}</i>")
@@ -133,10 +142,22 @@ def render_cities(cities: Sequence[City]) -> str:
     lines = ["<b>Города</b>", ""]
     for city in cities:
         status = "включен" if city.active else "выключен"
-        lines.append(f"🏙 {escape(city.name)} — {status}")
+        rate = format_salary_rate(city.salary_kind, city.salary_value)
+        lines.append(
+            f"🏙 {escape(city.name)} — {status}, работникам {rate}"
+        )
     lines.append("")
-    lines.append("Нажмите на город, чтобы включить или выключить его.")
+    lines.append("Нажмите на город, чтобы открыть его настройки.")
     return "\n".join(lines)
+
+
+def render_city_card(city: City) -> str:
+    rate = format_salary_rate(city.salary_kind, city.salary_value)
+    return (
+        f"🏙 <b>{escape(city.name)}</b>\n\n"
+        f"Статус: {'включен' if city.active else 'выключен'}\n"
+        f"Минус работникам: {rate}"
+    )
 
 
 def render_reports_list(reports: Sequence[ReportBrief], title: str) -> str:

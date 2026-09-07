@@ -20,7 +20,5 @@ services:
       # База лежит на постоянном диске, иначе отчеты пропадут при деплое.
       - key: DB_PATH
         value: /var/data/bot.db
-      - key: TAX_RATE
-        value: "0.30"
       - key: CURRENCY
         value: "€"
