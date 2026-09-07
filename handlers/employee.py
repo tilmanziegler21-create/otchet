@@ -44,6 +44,7 @@ class NewReport(StatesGroup):
     waiting_date = State()
     waiting_quantity = State()
     waiting_revenue = State()
+    waiting_category_customers = State()
     waiting_customers = State()
     waiting_touches = State()
     waiting_replies = State()
@@ -111,10 +112,21 @@ async def _ask_revenue(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _ask_category_customers(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    category = data["categories"][data["index"]]
+    await state.set_state(NewReport.waiting_category_customers)
+    await message.answer(
+        f"<b>{escape(category['name'])}</b>\n\n"
+        f"Сколько клиентов купили {escape(category['name'])}?",
+        reply_markup=cancel_menu(),
+    )
+
+
 async def _ask_customers(message: Message, state: FSMContext) -> None:
     await state.set_state(NewReport.waiting_customers)
     await message.answer(
-        "Сколько сегодня было покупателей?", reply_markup=cancel_menu()
+        "Сколько всего сегодня было покупателей?", reply_markup=cancel_menu()
     )
 
 
@@ -175,6 +187,7 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
             category["name"],
             data["entries"][str(index)]["quantity"],
             data["entries"][str(index)]["revenue"],
+            data["entries"][str(index)]["customers"],
         )
         for index, category in enumerate(data["categories"])
     ]
@@ -285,12 +298,13 @@ async def process_quantity(message: Message, state: FSMContext) -> None:
     category_name = data["categories"][data["index"]]["name"]
 
     if quantity == 0:
-        # Нечего продавать — выручку не спрашиваем.
+        # Нечего продавать — ни выручку, ни клиентов не спрашиваем.
         entry["revenue"] = 0.0
+        entry["customers"] = 0
         entries[key] = entry
         await state.update_data(entries=entries)
         await message.answer(
-            f"{escape(category_name)}: продаж нет, выручку не спрашиваю."
+            f"{escape(category_name)}: продаж нет, выручку и клиентов не спрашиваю."
         )
         await _next_step(message, state)
         return
@@ -315,6 +329,34 @@ async def process_revenue(message: Message, state: FSMContext) -> None:
     key = str(data["index"])
     entry = dict(entries.get(key, {}))
     entry["revenue"] = revenue
+    entries[key] = entry
+    await state.update_data(entries=entries)
+    await _ask_category_customers(message, state)
+
+
+@router.message(NewReport.waiting_category_customers, F.text)
+async def process_category_customers(message: Message, state: FSMContext) -> None:
+    clients = parse_int(message.text)
+    if clients is None:
+        await message.answer(
+            "Нужно целое число клиентов (например 28). Попробуйте еще раз:",
+            reply_markup=cancel_menu(),
+        )
+        return
+
+    data = await state.get_data()
+    entries = dict(data["entries"])
+    key = str(data["index"])
+    entry = dict(entries.get(key, {}))
+    if clients > int(entry["quantity"]):
+        # Один клиент мог взять несколько штук, но не наоборот.
+        await message.answer(
+            f"Клиентов не может быть больше проданных штук "
+            f"({entry['quantity']}). Введите число заново:",
+            reply_markup=cancel_menu(),
+        )
+        return
+    entry["customers"] = clients
     entries[key] = entry
     await state.update_data(entries=entries)
     await _next_step(message, state)
@@ -436,16 +478,17 @@ async def confirm_report(
     purchases = int(data.get("purchases", 0))
     extra_revenue = float(data.get("extra_revenue", 0.0))
 
-    items: list[tuple[int, int, float, float]] = []
+    items: list[tuple[int, int, float, float, int]] = []
     lines: list[CategoryLine] = []
     for index, category in enumerate(data["categories"]):
         entry = entries[str(index)]
         quantity = int(entry["quantity"])
         revenue = float(entry["revenue"])
+        clients = int(entry["customers"])
         fresh = await db.get_category(category["id"])
         purchase_price = fresh.purchase_price if fresh else 0.0
         is_liquid = fresh.is_liquid if fresh else bool(category["is_liquid"])
-        items.append((category["id"], quantity, revenue, purchase_price))
+        items.append((category["id"], quantity, revenue, purchase_price, clients))
         lines.append(
             CategoryLine(
                 category_id=category["id"],
@@ -454,6 +497,7 @@ async def confirm_report(
                 quantity=quantity,
                 revenue=revenue,
                 purchase_price=purchase_price,
+                customers_count=clients,
             )
         )
 
@@ -464,7 +508,7 @@ async def confirm_report(
     salary_value = city.salary_value if city else 0.0
 
     # Бонус за перевыполнение считаем от кассы месяца до этого отчета.
-    day_revenue = sum(revenue for _, _, revenue, _ in items)
+    day_revenue = sum(revenue for _, _, revenue, _, _ in items)
     bonus_context = await resolve_bonus(
         city_id, dates.from_db(report_date), day_revenue
     )
@@ -592,6 +636,7 @@ async def back_to_preview(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(NewReport.waiting_date)
 @router.message(NewReport.waiting_quantity)
 @router.message(NewReport.waiting_revenue)
+@router.message(NewReport.waiting_category_customers)
 @router.message(NewReport.waiting_customers)
 @router.message(NewReport.waiting_touches)
 @router.message(NewReport.waiting_replies)

@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS daily_report_items (
     category_id             INTEGER NOT NULL REFERENCES categories(id),
     quantity                INTEGER NOT NULL DEFAULT 0,
     revenue                 REAL    NOT NULL DEFAULT 0,
-    purchase_price_snapshot REAL    NOT NULL DEFAULT 0
+    purchase_price_snapshot REAL    NOT NULL DEFAULT 0,
+    customers_count         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_report_items_report ON daily_report_items(report_id);
@@ -114,6 +115,7 @@ class ReportItem:
     quantity: int
     revenue: float
     purchase_price_snapshot: float
+    customers_count: int
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,13 @@ async def _migrate(db: aiosqlite.Connection) -> None:
                 f"ALTER TABLE daily_reports ADD COLUMN {column} {kind} "
                 "NOT NULL DEFAULT 0"
             )
+
+    items = await _columns(db, "daily_report_items")
+    if "customers_count" not in items:
+        await db.execute(
+            "ALTER TABLE daily_report_items ADD COLUMN customers_count INTEGER "
+            "NOT NULL DEFAULT 0"
+        )
 
     cities = await _columns(db, "cities")
     if "salary_kind" not in cities:
@@ -459,13 +468,13 @@ async def save_report(
     salary_value: float,
     bonus: float,
     plan: float,
-    items: Sequence[tuple[int, int, float, float]],
+    items: Sequence[tuple[int, int, float, float, int]],
     touches: int = 0,
     replies: int = 0,
     purchases: int = 0,
     extra_revenue: float = 0.0,
 ) -> int:
-    """items: (category_id, quantity, revenue, purchase_price_snapshot)."""
+    """items: (category_id, quantity, revenue, purchase_price, customers_count)."""
     async with _connect() as db:
         await db.execute("PRAGMA foreign_keys = ON")
         cursor = await db.execute(
@@ -494,11 +503,19 @@ async def save_report(
         report_id = int(cursor.lastrowid)
         await db.executemany(
             "INSERT INTO daily_report_items "
-            "(report_id, category_id, quantity, revenue, purchase_price_snapshot) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(report_id, category_id, quantity, revenue, purchase_price_snapshot, "
+            " customers_count) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (report_id, category_id, int(quantity), float(revenue), float(price))
-                for category_id, quantity, revenue, price in items
+                (
+                    report_id,
+                    category_id,
+                    int(quantity),
+                    float(revenue),
+                    float(price),
+                    int(customers),
+                )
+                for category_id, quantity, revenue, price, customers in items
             ],
         )
         await db.commit()
@@ -508,7 +525,7 @@ async def save_report(
 async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
     cursor = await db.execute(
         "SELECT i.category_id, c.name, c.is_liquid, i.quantity, i.revenue, "
-        "       i.purchase_price_snapshot "
+        "       i.purchase_price_snapshot, i.customers_count "
         "FROM daily_report_items AS i "
         "JOIN categories AS c ON c.id = i.category_id "
         "WHERE i.report_id = ? ORDER BY i.category_id",
@@ -523,6 +540,7 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
             quantity=int(item["quantity"]),
             revenue=float(item["revenue"]),
             purchase_price_snapshot=float(item["purchase_price_snapshot"]),
+            customers_count=int(item["customers_count"] or 0),
         )
         for item in item_rows
     )

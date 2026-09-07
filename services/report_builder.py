@@ -48,8 +48,9 @@ def _category_blocks(summary: SummaryTotals) -> list[str]:
         f"<b>{escape(line.name)}:</b>\n\n"
         f"Количество — {format_quantity(line.quantity)}\n"
         f"Выручка — {format_money(line.revenue)}\n"
+        f"Клиентов — {line.customers_count}\n"
         f"Средний чек — {format_money(line.average_check)}\n"
-        f"UPD — {format_upd(summary.category_upd(line))}\n"
+        f"UPD — {format_upd(line.upd)}\n"
         f"Себестоимость — {format_money(line.cost)}\n"
         f"Чистая прибыль — {format_money(summary.category_profit(line))}"
         for line in summary.lines
@@ -194,7 +195,7 @@ def render_employee_result(summary: ReportSummary) -> str:
     for line in summary.lines:
         lines.append(
             f"{escape(line.name)} — {format_quantity(line.quantity)} / "
-            f"UPD {format_upd(summary.category_upd(line))}"
+            f"{line.customers_count} клиентов / UPD {format_upd(line.upd)}"
         )
     lines.extend(
         [
@@ -216,7 +217,7 @@ def render_employee_summary(summary: ReportSummary) -> str:
         lines.append(
             f"{escape(line.name)} — {format_quantity(line.quantity)} / "
             f"{format_money(line.revenue)} / "
-            f"UPD {format_upd(summary.category_upd(line))}"
+            f"{line.customers_count} клиентов / UPD {format_upd(line.upd)}"
         )
     lines.extend(
         [
@@ -233,7 +234,7 @@ def render_employee_summary(summary: ReportSummary) -> str:
 
 def render_preview(
     report_date: date,
-    rows: Sequence[tuple[str, int, float]],
+    rows: Sequence[tuple[str, int, float, int]],
     customers_count: int,
     city_name: str | None = None,
     outreach: tuple[int, int, int, float] | None = None,
@@ -241,9 +242,10 @@ def render_preview(
     """Предпросмотр перед сохранением (данные работника, без экономики)."""
     header = _header(report_date, city_name, full_date=True)
     lines = [f"<b>Проверьте отчет за {header}</b>", ""]
-    for name, quantity, revenue in rows:
+    for name, quantity, revenue, clients in rows:
         lines.append(
-            f"{escape(name)} — {format_quantity(quantity)} / {format_money(revenue)}"
+            f"{escape(name)} — {format_quantity(quantity)} / "
+            f"{format_money(revenue)} / {clients} клиентов"
         )
     lines.append("")
     lines.append(f"Покупателей — {customers_count}")

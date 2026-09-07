@@ -119,6 +119,7 @@ class CategoryLine:
     quantity: int
     revenue: float
     purchase_price: float
+    customers_count: int = 0
 
     @property
     def cost(self) -> float:
@@ -128,6 +129,11 @@ class CategoryLine:
     @property
     def average_check(self) -> float:
         return calculate_average_check(self.revenue, self.quantity)
+
+    @property
+    def upd(self) -> float:
+        """UPD бренда — его штуки на одного клиента этого бренда."""
+        return calculate_upd(self.quantity, self.customers_count)
 
 
 class SummaryTotals:
@@ -185,10 +191,6 @@ class SummaryTotals:
     def category_profit(self, line: CategoryLine) -> float:
         """Прибыль категории пропорционально ее выручке и себестоимости."""
         return line.revenue - self.category_deductions(line) - line.cost
-
-    def category_upd(self, line: CategoryLine) -> float:
-        """UPD бренда — сколько его штук на одного покупателя."""
-        return calculate_upd(line.quantity, self.customers_count)
 
     # ------------------------------------------------------------- рассылки
     @property
@@ -298,10 +300,16 @@ class PeriodLine:
     quantity: int
     revenue: float
     cost: float
+    customers_count: int = 0
 
     @property
     def average_check(self) -> float:
         return calculate_average_check(self.revenue, self.quantity)
+
+    @property
+    def upd(self) -> float:
+        """UPD бренда за период — штуки / клиенты бренда за все дни."""
+        return calculate_upd(self.quantity, self.customers_count)
 
 
 @dataclass(frozen=True)
@@ -386,11 +394,13 @@ def build_period_summary(
                     "quantity": 0,
                     "revenue": 0.0,
                     "cost": 0.0,
+                    "customers": 0,
                 },
             )
             line["quantity"] += item.quantity
             line["revenue"] += item.revenue
             line["cost"] += item.quantity * item.purchase_price_snapshot
+            line["customers"] += item.customers_count
 
     return PeriodSummary(
         kind=kind,
@@ -404,6 +414,7 @@ def build_period_summary(
                 quantity=line["quantity"],
                 revenue=line["revenue"],
                 cost=line["cost"],
+                customers_count=line["customers"],
             )
             for category_id, line in categories.items()
         ),
@@ -438,6 +449,7 @@ def summary_from_report(report: Report, month_revenue: float = 0.0) -> ReportSum
             quantity=item.quantity,
             revenue=item.revenue,
             purchase_price=item.purchase_price_snapshot,
+            customers_count=item.customers_count,
         )
         for item in report.items
     ]
