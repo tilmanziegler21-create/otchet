@@ -13,7 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from config import config
-from database import init_db
+from database import StorageError, init_db
 from handlers import get_routers
 from services.backup import backup_scheduler
 
@@ -44,7 +44,11 @@ async def main() -> None:
             "ADMIN_IDS не заданы — админ-панель и полные отчеты будут недоступны."
         )
 
-    await init_db()
+    try:
+        await init_db()
+    except StorageError as error:
+        logger.error("%s", error)
+        sys.exit(1)
     logger.info("База данных готова: %s", config.db_path)
 
     bot = Bot(

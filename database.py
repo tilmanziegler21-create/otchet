@@ -216,9 +216,25 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )
 
 
+class StorageError(RuntimeError):
+    """Каталог из DB_PATH недоступен для записи — чаще всего не смонтирован диск."""
+
+
+def _prepare_storage() -> None:
+    folder = config.db_path.parent
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise StorageError(
+            f"Каталог {folder} недоступен для записи ({error.strerror}). "
+            f"DB_PATH={config.db_path}. На Render проверьте, что подключен диск "
+            f"с Mount Path {folder}, либо укажите другой DB_PATH."
+        ) from error
+
+
 async def init_db() -> None:
     """Создает схему, добавляет категории по умолчанию и синхронизирует админов."""
-    config.db_path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_storage()
     async with _connect() as db:
         await db.execute("PRAGMA foreign_keys = ON")
         await db.executescript(SCHEMA_SCRIPT)
