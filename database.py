@@ -619,6 +619,14 @@ async def get_reports_between(
         return [await _fetch_report(db, row) for row in rows]
 
 
+async def count_reports() -> int:
+    """Всего отчетов в базе — для подписи к бэкапу."""
+    async with _connect() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM daily_reports")
+        row = await cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
 async def count_reports_by_date(report_date: str, city_id: int | None = None) -> int:
     query = "SELECT COUNT(*) FROM daily_reports WHERE date = ?"
     params: list[object] = [report_date]

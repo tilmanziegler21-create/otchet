@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from html import escape
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -51,6 +51,7 @@ from keyboards.admin import (
     salary_kind_menu,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
+from services.backup import send_backup
 from services.calculations import PERIOD_MONTH, PERIOD_WEEK
 from services.report_builder import (
     render_cities,
@@ -107,6 +108,19 @@ async def btn_admin(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("admin"), IsNotAdmin())
 async def cmd_admin_denied(message: Message) -> None:
+    await message.answer("Команда недоступна.")
+
+
+@router.message(Command("backup"), IsAdmin())
+async def cmd_backup(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Копия базы по требованию — на случай переезда или рискованных правок."""
+    await state.clear()
+    if not await send_backup(bot, chat_ids=(message.chat.id,)):
+        await message.answer("Не удалось снять копию базы, смотрите логи.")
+
+
+@router.message(Command("backup"), IsNotAdmin())
+async def cmd_backup_denied(message: Message) -> None:
     await message.answer("Команда недоступна.")
 
 

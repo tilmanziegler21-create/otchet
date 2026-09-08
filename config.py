@@ -30,12 +30,22 @@ def _parse_admin_ids(raw: str | None) -> tuple[int, ...]:
     return tuple(dict.fromkeys(ids))
 
 
+def _parse_hour(raw: str | None, default: int) -> int:
+    """Час суточного бэкапа, 0-23. Мусор и выход за границы -> значение по умолчанию."""
+    try:
+        hour = int((raw or "").strip())
+    except ValueError:
+        return default
+    return hour if 0 <= hour <= 23 else default
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str
     admin_ids: tuple[int, ...]
     db_path: Path
     currency: str
+    backup_hour: int
 
     def is_admin(self, telegram_id: int | None) -> bool:
         return telegram_id is not None and telegram_id in self.admin_ids
@@ -50,6 +60,7 @@ def load_config() -> Config:
         admin_ids=_parse_admin_ids(os.getenv("ADMIN_IDS")),
         db_path=db_path,
         currency=(os.getenv("CURRENCY") or "€").strip(),
+        backup_hour=_parse_hour(os.getenv("BACKUP_HOUR"), 3),
     )
 
 

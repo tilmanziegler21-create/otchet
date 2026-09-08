@@ -15,6 +15,7 @@ from aiogram.types import BotCommand
 from config import config
 from database import init_db
 from handlers import get_routers
+from services.backup import backup_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,7 @@ COMMANDS = (
     BotCommand(command="admin", description="Админ-панель"),
     BotCommand(command="week", description="Отчет за неделю (админ)"),
     BotCommand(command="month", description="Отчет за месяц (админ)"),
+    BotCommand(command="backup", description="Копия базы (админ)"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 )
 
@@ -55,9 +57,14 @@ async def main() -> None:
     await bot.set_my_commands(list(COMMANDS))
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Бот запущен. Администраторы: %s", config.admin_ids or "—")
+
+    # Суточный бэкап базы админам — страховка на случай потери диска.
+    backup_task = asyncio.create_task(backup_scheduler(bot))
+    logger.info("Бэкап базы будет уходить каждый день в %02d:00", config.backup_hour)
     try:
         await dispatcher.start_polling(bot)
     finally:
+        backup_task.cancel()
         await bot.session.close()
 
 

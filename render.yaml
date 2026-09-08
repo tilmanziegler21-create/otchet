@@ -22,3 +22,9 @@ services:
         value: /var/data/bot.db
       - key: CURRENCY
         value: "€"
+      # Без TZ сервер живет по UTC, и «сегодня» в отчете сдвинется.
+      - key: TZ
+        value: Europe/Berlin
+      # Час суточного бэкапа базы админам в Telegram.
+      - key: BACKUP_HOUR
+        value: "3"
