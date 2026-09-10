@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from html import escape
+from typing import Sequence
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
@@ -21,12 +22,17 @@ from keyboards.employee import (
     CB_EDIT_CATEGORY,
     CB_EDIT_CITY,
     CB_EDIT_CUSTOMERS,
+    CB_EDIT_ITEMS,
     CB_EDIT_OUTREACH,
+    CB_PICK,
+    CB_PICK_DONE,
+    CB_PICK_NONE,
     cancel_menu,
     cities_menu,
     date_menu,
     edit_menu,
     main_menu,
+    picker_menu,
     preview_menu,
 )
 from services.calculations import CategoryLine, build_summary
@@ -42,6 +48,7 @@ router = Router(name="employee")
 class NewReport(StatesGroup):
     waiting_city = State()
     waiting_date = State()
+    picking = State()
     waiting_quantity = State()
     waiting_revenue = State()
     waiting_category_customers = State()
@@ -84,6 +91,67 @@ async def _ask_date(message: Message, state: FSMContext) -> None:
         "в формате ДД.ММ или ДД.ММ.ГГГГ.",
         reply_markup=date_menu(),
     )
+
+
+async def _ask_picker(message: Message, state: FSMContext, edit: bool = False) -> None:
+    """Показывает позиции текущей группы с галочками."""
+    data = await state.get_data()
+    group = data["catalog"][data["group_index"]]
+    picked = [item["id"] for item in group["items"] if item["id"] in data["picked"]]
+    text = (
+        f"<b>{escape(group['title'])}</b> "
+        f"({data['group_index'] + 1}/{len(data['catalog'])})\n\n"
+        "Отметьте, что продавалось сегодня:"
+    )
+    markup = picker_menu([(item["id"], item["name"]) for item in group["items"]], picked)
+    await state.set_state(NewReport.picking)
+    if edit:
+        await message.edit_text(text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
+
+
+async def _start_filling(message: Message, state: FSMContext) -> None:
+    """Выбор закончен: собираем отмеченные позиции и спрашиваем по ним цифры."""
+    data = await state.get_data()
+    picked = set(data["picked"])
+    categories = [
+        item
+        for group in data["catalog"]
+        for item in group["items"]
+        if item["id"] in picked
+    ]
+    if not categories:
+        await message.answer(
+            "Ничего не отмечено — отчет пустой. Начнем выбор заново."
+        )
+        await state.update_data(group_index=0)
+        await _ask_picker(message, state)
+        return
+
+    # При правке списка уже введенные цифры сохраняем — они привязаны к позиции.
+    filled = {
+        category["id"]: data["entries"][str(index)]
+        for index, category in enumerate(data.get("categories", []))
+        if str(index) in data["entries"]
+    }
+    entries = {
+        str(index): filled[category["id"]]
+        for index, category in enumerate(categories)
+        if category["id"] in filled
+    }
+    await state.update_data(categories=categories, entries=entries)
+
+    names = ", ".join(category["name"] for category in categories)
+    await message.answer(f"Отмечено позиций: {len(categories)}\n{escape(names)}")
+
+    missing = [index for index in range(len(categories)) if str(index) not in entries]
+    if not missing:
+        await state.update_data(index=0)
+        await _show_preview(message, state)
+        return
+    await state.update_data(index=missing[0], edit_target=None)
+    await _ask_quantity(message, state)
 
 
 async def _ask_quantity(message: Message, state: FSMContext) -> None:
@@ -171,10 +239,20 @@ async def _next_step(message: Message, state: FSMContext) -> None:
     if data.get("edit_target"):
         await _show_preview(message, state)
         return
-    next_index = data["index"] + 1
-    if next_index < len(data["categories"]):
+    # После правки списка позиций часть цифр уже введена — их не переспрашиваем.
+    next_index = next(
+        (
+            index
+            for index in range(data["index"] + 1, len(data["categories"]))
+            if str(index) not in data["entries"]
+        ),
+        None,
+    )
+    if next_index is not None:
         await state.update_data(index=next_index)
         await _ask_quantity(message, state)
+    elif "customers_count" in data:
+        await _show_preview(message, state)
     else:
         await _ask_customers(message, state)
 
@@ -184,10 +262,13 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
     await state.update_data(edit_target=None)
     rows = [
         (
+            category["group_key"],
             category["name"],
             data["entries"][str(index)]["quantity"],
             data["entries"][str(index)]["revenue"],
-            data["entries"][str(index)]["customers"],
+            data["entries"][str(index)]["customers"]
+            if category["needs_customers"]
+            else None,
         )
         for index, category in enumerate(data["categories"])
     ]
@@ -210,6 +291,26 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
 # ----------------------------------------------------------------- запуск
 
 
+def _build_catalog(categories: Sequence[db.Category]) -> list[dict]:
+    """Раскладывает позиции по группам, пустые группы пропускаем."""
+    catalog: list[dict] = []
+    for group_key, title in db.GROUP_TITLES.items():
+        items = [
+            {
+                "id": category.id,
+                "name": category.name,
+                "is_liquid": category.is_liquid,
+                "group_key": category.group_key,
+                "needs_customers": category.needs_customers,
+            }
+            for category in categories
+            if category.group_key == group_key
+        ]
+        if items:
+            catalog.append({"key": group_key, "title": title, "items": items})
+    return catalog
+
+
 @router.message(F.text == BTN_NEW_REPORT)
 async def start_new_report(message: Message, state: FSMContext) -> None:
     categories = await db.get_categories(only_active=True)
@@ -220,9 +321,10 @@ async def start_new_report(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await state.update_data(
-        categories=[
-            {"id": c.id, "name": c.name, "is_liquid": c.is_liquid} for c in categories
-        ],
+        catalog=_build_catalog(categories),
+        picked=[],
+        group_index=0,
+        categories=[],
         entries={},
         index=0,
         edit_target=None,
@@ -278,7 +380,75 @@ async def process_date(message: Message, state: FSMContext) -> None:
             "уже есть в базе. Новый отчет будет сохранен отдельно."
         )
     await message.answer(f"Дата отчета: {dates.format_full(report_date)}")
-    await _ask_quantity(message, state)
+    await _ask_picker(message, state)
+
+
+# ------------------------------------------------------- выбор позиций
+
+
+@router.callback_query(NewReport.picking, F.data == CB_PICK_DONE)
+async def picker_done(callback: CallbackQuery, state: FSMContext) -> None:
+    await _picker_next_group(callback, state)
+
+
+@router.callback_query(NewReport.picking, F.data == CB_PICK_NONE)
+async def picker_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    """Пропуск группы: снимаем отметки, если работник их уже поставил."""
+    data = await state.get_data()
+    group = data["catalog"][data["group_index"]]
+    group_ids = {item["id"] for item in group["items"]}
+    await state.update_data(
+        picked=[item_id for item_id in data["picked"] if item_id not in group_ids]
+    )
+    await _picker_next_group(callback, state)
+
+
+async def _picker_next_group(callback: CallbackQuery, state: FSMContext) -> None:
+    """Следующая группа или переход к вводу цифр по отмеченным позициям."""
+    data = await state.get_data()
+    group = data["catalog"][data["group_index"]]
+    chosen = [item["name"] for item in group["items"] if item["id"] in data["picked"]]
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"<b>{escape(group['title'])}</b>: "
+            + (escape(", ".join(chosen)) if chosen else "не продавалось")
+        )
+
+    next_index = data["group_index"] + 1
+    await state.update_data(group_index=next_index)
+    if callback.message is not None:
+        if next_index < len(data["catalog"]):
+            await _ask_picker(callback.message, state)
+        else:
+            await _start_filling(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(NewReport.picking, F.data.startswith(CB_PICK))
+async def picker_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    raw_id = (callback.data or "")[len(CB_PICK) :]
+    if not raw_id.isdigit():
+        await callback.answer("Не понял позицию", show_alert=True)
+        return
+
+    item_id = int(raw_id)
+    data = await state.get_data()
+    picked = list(data["picked"])
+    if item_id in picked:
+        picked.remove(item_id)
+    else:
+        picked.append(item_id)
+    await state.update_data(picked=picked)
+
+    group = data["catalog"][data["group_index"]]
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(
+            reply_markup=picker_menu(
+                [(item["id"], item["name"]) for item in group["items"]],
+                [item["id"] for item in group["items"] if item["id"] in picked],
+            )
+        )
+    await callback.answer()
 
 
 @router.message(NewReport.waiting_quantity, F.text)
@@ -331,6 +501,14 @@ async def process_revenue(message: Message, state: FSMContext) -> None:
     entry["revenue"] = revenue
     entries[key] = entry
     await state.update_data(entries=entries)
+
+    if not data["categories"][data["index"]]["needs_customers"]:
+        # По подам, картриджам и наборам UPD не считаем — клиентов не спрашиваем.
+        entry["customers"] = 0
+        entries[key] = entry
+        await state.update_data(entries=entries)
+        await _next_step(message, state)
+        return
     await _ask_category_customers(message, state)
 
 
@@ -488,6 +666,7 @@ async def confirm_report(
         fresh = await db.get_category(category["id"])
         purchase_price = fresh.purchase_price if fresh else 0.0
         is_liquid = fresh.is_liquid if fresh else bool(category["is_liquid"])
+        group_key = fresh.group_key if fresh else category["group_key"]
         items.append((category["id"], quantity, revenue, purchase_price, clients))
         lines.append(
             CategoryLine(
@@ -498,6 +677,7 @@ async def confirm_report(
                 revenue=revenue,
                 purchase_price=purchase_price,
                 customers_count=clients,
+                group_key=group_key,
             )
         )
 
@@ -595,6 +775,16 @@ async def edit_category(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(NewReport.choose_edit, F.data == CB_EDIT_ITEMS)
+async def edit_items(callback: CallbackQuery, state: FSMContext) -> None:
+    """Правка списка проданных позиций: заново проходим группы с галочками."""
+    await state.update_data(group_index=0, edit_target=None)
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await _ask_picker(callback.message, state)
+    await callback.answer()
+
+
 @router.callback_query(NewReport.choose_edit, F.data == CB_EDIT_CITY)
 async def edit_city(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(edit_target="city")
@@ -647,6 +837,7 @@ async def wrong_input_type(message: Message) -> None:
 
 
 @router.message(NewReport.waiting_city)
+@router.message(NewReport.picking)
 @router.message(NewReport.preview)
 @router.message(NewReport.choose_edit)
 async def use_buttons(message: Message) -> None:

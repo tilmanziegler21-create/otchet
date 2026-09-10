@@ -19,12 +19,53 @@ SALARY_FIXED = "fixed"  # фиксированная сумма за день
 SALARY_MONTHLY = "monthly"  # фикс за месяц, в отчете делится на дни месяца
 SALARY_KINDS = (SALARY_PERCENT, SALARY_FIXED, SALARY_MONTHLY)
 
-# name, purchase_price, is_liquid
-DEFAULT_CATEGORIES: tuple[tuple[str, float, int], ...] = (
-    ("ELFLIQ", 0.0, 1),
-    ("CHASER", 0.0, 1),
-    ("HQD", 0.0, 0),
-    ("VOZOL", 0.0, 0),
+# Группы товаров: определяют порядок в отчете и то, какие вопросы задавать.
+GROUP_LIQUID = "liquid"
+GROUP_DEVICE = "device"
+GROUP_POD = "pod"
+GROUP_CARTRIDGE = "cartridge"
+GROUP_SET = "set"
+
+# Порядок ключей = порядок групп в отчете и при заполнении.
+GROUP_TITLES: dict[str, str] = {
+    GROUP_LIQUID: "Жидкости",
+    GROUP_DEVICE: "Электронки",
+    GROUP_POD: "Поды",
+    GROUP_CARTRIDGE: "Картриджи",
+    GROUP_SET: "Наборы",
+}
+GROUPS = tuple(GROUP_TITLES)
+
+# Клиентов (а значит и UPD) спрашиваем только по этим группам.
+GROUPS_WITH_CUSTOMERS = (GROUP_LIQUID, GROUP_DEVICE)
+
+# name, purchase_price, group_key
+DEFAULT_CATEGORIES: tuple[tuple[str, float, str], ...] = (
+    ("ELFLIQ", 0.0, GROUP_LIQUID),
+    ("CHASER", 0.0, GROUP_LIQUID),
+    ("HQD", 0.0, GROUP_LIQUID),
+    ("VOZOL", 0.0, GROUP_LIQUID),
+    ("ELFBAR RAYA D3 25.000", 0.0, GROUP_DEVICE),
+    ("ELFBAR NIC KING", 0.0, GROUP_DEVICE),
+    ("ELFBAR SOUR KING", 0.0, GROUP_DEVICE),
+    ("ELFBAR SWEET KING", 0.0, GROUP_DEVICE),
+    ("ELFBAR DUKE 30.000", 0.0, GROUP_DEVICE),
+    ("ELFBAR GH 33.000", 0.0, GROUP_DEVICE),
+    ("ELFBAR 40.000", 0.0, GROUP_DEVICE),
+    ("VOZOL 40.000", 0.0, GROUP_DEVICE),
+    ("VOZOL 50.000", 0.0, GROUP_DEVICE),
+    ("WAKA 60.000", 0.0, GROUP_DEVICE),
+    ("XROS 5 MINI", 0.0, GROUP_POD),
+    ("Картридж 0.6", 0.0, GROUP_CARTRIDGE),
+    ("Картридж 0.8", 0.0, GROUP_CARTRIDGE),
+    ("Картридж 0.4", 0.0, GROUP_CARTRIDGE),
+    ("Под + 2 жижи (50€)", 0.0, GROUP_SET),
+    ("2 пода + 4 жижи (90€)", 0.0, GROUP_SET),
+    ("2 картриджа + 1 жидкость (25€)", 0.0, GROUP_SET),
+    ("4 картриджа + 2 жижи (45€)", 0.0, GROUP_SET),
+    ("Под + 2 жижи + 2 картриджа (60€)", 0.0, GROUP_SET),
+    ("Под + 4 жидкости (70€)", 0.0, GROUP_SET),
+    ("Под + 4 жидкости + 4 картриджа (90€)", 0.0, GROUP_SET),
 )
 
 SCHEMA_SCRIPT = """
@@ -38,6 +79,7 @@ CREATE TABLE IF NOT EXISTS categories (
     name           TEXT    NOT NULL UNIQUE,
     purchase_price REAL    NOT NULL DEFAULT 0,
     is_liquid      INTEGER NOT NULL DEFAULT 0,
+    group_key      TEXT    NOT NULL DEFAULT 'liquid',
     active         INTEGER NOT NULL DEFAULT 1
 );
 
@@ -95,7 +137,17 @@ class Category:
     name: str
     purchase_price: float
     is_liquid: bool
+    group_key: str
     active: bool
+
+    @property
+    def group_title(self) -> str:
+        return GROUP_TITLES.get(self.group_key, self.group_key)
+
+    @property
+    def needs_customers(self) -> bool:
+        """По подам, картриджам и наборам клиентов не спрашиваем."""
+        return self.group_key in GROUPS_WITH_CUSTOMERS
 
 
 @dataclass(frozen=True)
@@ -112,6 +164,7 @@ class ReportItem:
     category_id: int
     name: str
     is_liquid: bool
+    group_key: str
     quantity: int
     revenue: float
     purchase_price_snapshot: float
@@ -205,6 +258,23 @@ async def _migrate(db: aiosqlite.Connection) -> None:
             "NOT NULL DEFAULT 0"
         )
 
+    categories = await _columns(db, "categories")
+    if "group_key" not in categories:
+        await db.execute(
+            "ALTER TABLE categories ADD COLUMN group_key TEXT NOT NULL DEFAULT 'liquid'"
+        )
+        # Позиции из старых версий: известные раскладываем по каталогу,
+        # остальные считаем электронками — жидкости там были только штатные.
+        known = {name: group for name, _, group in DEFAULT_CATEGORIES}
+        await db.execute(
+            "UPDATE categories SET group_key = ?", (GROUP_DEVICE,)
+        )
+        for name, group in known.items():
+            await db.execute(
+                "UPDATE categories SET group_key = ? WHERE name = ? COLLATE NOCASE",
+                (group, name),
+            )
+
     cities = await _columns(db, "cities")
     if "salary_kind" not in cities:
         await db.execute(
@@ -239,11 +309,11 @@ async def init_db() -> None:
         await db.execute("PRAGMA foreign_keys = ON")
         await db.executescript(SCHEMA_SCRIPT)
         await _migrate(db)
-        for name, price, is_liquid in DEFAULT_CATEGORIES:
+        for name, price, group_key in DEFAULT_CATEGORIES:
             await db.execute(
-                "INSERT OR IGNORE INTO categories (name, purchase_price, is_liquid, active) "
-                "VALUES (?, ?, ?, 1)",
-                (name, price, is_liquid),
+                "INSERT OR IGNORE INTO categories "
+                "(name, purchase_price, is_liquid, group_key, active) VALUES (?, ?, ?, ?, 1)",
+                (name, price, int(group_key == GROUP_LIQUID), group_key),
             )
         for admin_id in config.admin_ids:
             await db.execute(
@@ -283,21 +353,40 @@ async def get_user_role(telegram_id: int) -> str | None:
 # ----------------------------------------------------------- categories
 
 
+CATEGORY_FIELDS = "id, name, purchase_price, is_liquid, group_key, active"
+
+
+def _group_order(group_column: str, id_column: str) -> str:
+    """ORDER BY, который выстраивает позиции группами как в GROUP_TITLES."""
+    cases = " ".join(
+        f"WHEN '{key}' THEN {index}" for index, key in enumerate(GROUPS)
+    )
+    return (
+        f"ORDER BY CASE {group_column} {cases} ELSE {len(GROUPS)} END, {id_column}"
+    )
+
+
+CATEGORY_ORDER = _group_order("group_key", "id")
+
+
 def _category_from_row(row: aiosqlite.Row) -> Category:
+    group_key = row["group_key"] or GROUP_LIQUID
     return Category(
         id=row["id"],
         name=row["name"],
         purchase_price=float(row["purchase_price"]),
-        is_liquid=bool(row["is_liquid"]),
+        # Жидкость определяется группой: только она идет в UPD и «все жидкости».
+        is_liquid=group_key == GROUP_LIQUID,
+        group_key=group_key,
         active=bool(row["active"]),
     )
 
 
 async def get_categories(only_active: bool = True) -> list[Category]:
-    query = "SELECT id, name, purchase_price, is_liquid, active FROM categories"
+    query = f"SELECT {CATEGORY_FIELDS} FROM categories"
     if only_active:
         query += " WHERE active = 1"
-    query += " ORDER BY id"
+    query += f" {CATEGORY_ORDER}"
     async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query)
@@ -309,7 +398,7 @@ async def get_category(category_id: int) -> Category | None:
     async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, name, purchase_price, is_liquid, active FROM categories WHERE id = ?",
+            f"SELECT {CATEGORY_FIELDS} FROM categories WHERE id = ?",
             (category_id,),
         )
         row = await cursor.fetchone()
@@ -320,19 +409,24 @@ async def get_category_by_name(name: str) -> Category | None:
     async with _connect() as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, name, purchase_price, is_liquid, active FROM categories "
-            "WHERE name = ? COLLATE NOCASE",
+            f"SELECT {CATEGORY_FIELDS} FROM categories WHERE name = ? COLLATE NOCASE",
             (name,),
         )
         row = await cursor.fetchone()
     return _category_from_row(row) if row else None
 
 
-async def add_category(name: str, purchase_price: float, is_liquid: bool) -> int:
+async def add_category(name: str, purchase_price: float, group_key: str) -> int:
     async with _connect() as db:
         cursor = await db.execute(
-            "INSERT INTO categories (name, purchase_price, is_liquid, active) VALUES (?, ?, ?, 1)",
-            (name, float(purchase_price), int(is_liquid)),
+            "INSERT INTO categories (name, purchase_price, is_liquid, group_key, active) "
+            "VALUES (?, ?, ?, ?, 1)",
+            (
+                name,
+                float(purchase_price),
+                int(group_key == GROUP_LIQUID),
+                group_key,
+            ),
         )
         await db.commit()
         return int(cursor.lastrowid)
@@ -540,11 +634,11 @@ async def save_report(
 
 async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
     cursor = await db.execute(
-        "SELECT i.category_id, c.name, c.is_liquid, i.quantity, i.revenue, "
+        "SELECT i.category_id, c.name, c.group_key, i.quantity, i.revenue, "
         "       i.purchase_price_snapshot, i.customers_count "
         "FROM daily_report_items AS i "
         "JOIN categories AS c ON c.id = i.category_id "
-        "WHERE i.report_id = ? ORDER BY i.category_id",
+        f"WHERE i.report_id = ? {_group_order('c.group_key', 'i.category_id')}",
         (row["id"],),
     )
     item_rows = await cursor.fetchall()
@@ -552,7 +646,8 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
         ReportItem(
             category_id=item["category_id"],
             name=item["name"],
-            is_liquid=bool(item["is_liquid"]),
+            is_liquid=(item["group_key"] or GROUP_LIQUID) == GROUP_LIQUID,
+            group_key=item["group_key"] or GROUP_LIQUID,
             quantity=int(item["quantity"]),
             revenue=float(item["revenue"]),
             purchase_price_snapshot=float(item["purchase_price_snapshot"]),

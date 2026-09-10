@@ -6,7 +6,7 @@ from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from database import Category, City, ReportBrief
+from database import GROUP_TITLES, Category, City, ReportBrief
 from utils import dates
 from utils.formatting import format_money
 
@@ -28,7 +28,7 @@ CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
-CB_LIQUID_PREFIX = "adm:liquid:"
+CB_GROUP_PREFIX = "adm:group:"
 CB_CLOSE = "adm:close"
 
 ACTION_PRICE_SET = "price_set"
@@ -237,19 +237,16 @@ def plan_months_menu(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def liquid_menu() -> InlineKeyboardMarkup:
+def group_menu() -> InlineKeyboardMarkup:
+    """Группа новой позиции — от нее зависят порядок в отчете и вопросы."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="💧 Да, это жидкость", callback_data=f"{CB_LIQUID_PREFIX}1"
+                    text=title, callback_data=f"{CB_GROUP_PREFIX}{key}"
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔧 Нет, устройство", callback_data=f"{CB_LIQUID_PREFIX}0"
-                )
-            ],
+            ]
+            for key, title in GROUP_TITLES.items()
         ]
     )
 

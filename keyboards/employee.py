@@ -29,6 +29,10 @@ CB_EDIT_CATEGORY = "report:edit:cat:"
 CB_EDIT_CUSTOMERS = "report:edit:customers"
 CB_EDIT_CITY = "report:edit:city"
 CB_EDIT_OUTREACH = "report:edit:outreach"
+CB_EDIT_ITEMS = "report:edit:items"
+CB_PICK = "report:pick:id:"
+CB_PICK_DONE = "report:pick:done"
+CB_PICK_NONE = "report:pick:none"
 CB_EMPLOYEE_REPORT = "emp:report:"
 
 
@@ -76,6 +80,34 @@ def cities_menu(cities: Sequence[City]) -> InlineKeyboardMarkup:
     )
 
 
+def picker_menu(
+    items: Sequence[tuple[int, str]], chosen: Sequence[int]
+) -> InlineKeyboardMarkup:
+    """Список позиций группы с галочками. `items` — пары (id позиции, название)."""
+    picked = set(chosen)
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'☑️' if item_id in picked else '⬜️'} {name}",
+                callback_data=f"{CB_PICK}{item_id}",
+            )
+        ]
+        for item_id, name in items
+    ]
+    if picked:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"✅ Готово ({len(picked)})", callback_data=CB_PICK_DONE
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="➡️ Не продавалось", callback_data=CB_PICK_NONE)]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def preview_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -99,6 +131,9 @@ def edit_menu(names: Sequence[str]) -> InlineKeyboardMarkup:
     )
     rows.append(
         [InlineKeyboardButton(text="📨 Рассылки", callback_data=CB_EDIT_OUTREACH)]
+    )
+    rows.append(
+        [InlineKeyboardButton(text="🧾 Список позиций", callback_data=CB_EDIT_ITEMS)]
     )
     rows.append([InlineKeyboardButton(text="🏙 Город", callback_data=CB_EDIT_CITY)])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_BACK)])

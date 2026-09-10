@@ -18,7 +18,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Sequence
 
-from database import SALARY_FIXED, SALARY_MONTHLY, SALARY_PERCENT, Report
+from database import (
+    GROUP_LIQUID,
+    GROUPS_WITH_CUSTOMERS,
+    SALARY_FIXED,
+    SALARY_MONTHLY,
+    SALARY_PERCENT,
+    Report,
+)
 from utils import dates
 from utils.formatting import round_money
 
@@ -120,6 +127,7 @@ class CategoryLine:
     revenue: float
     purchase_price: float
     customers_count: int = 0
+    group_key: str = GROUP_LIQUID
 
     @property
     def cost(self) -> float:
@@ -134,6 +142,11 @@ class CategoryLine:
     def upd(self) -> float:
         """UPD бренда — его штуки на одного клиента этого бренда."""
         return calculate_upd(self.quantity, self.customers_count)
+
+    @property
+    def shows_customers(self) -> bool:
+        """Клиентов и UPD ведем только по жидкостям и электронкам."""
+        return self.group_key in GROUPS_WITH_CUSTOMERS
 
 
 class SummaryTotals:
@@ -301,6 +314,7 @@ class PeriodLine:
     revenue: float
     cost: float
     customers_count: int = 0
+    group_key: str = GROUP_LIQUID
 
     @property
     def average_check(self) -> float:
@@ -310,6 +324,10 @@ class PeriodLine:
     def upd(self) -> float:
         """UPD бренда за период — штуки / клиенты бренда за все дни."""
         return calculate_upd(self.quantity, self.customers_count)
+
+    @property
+    def shows_customers(self) -> bool:
+        return self.group_key in GROUPS_WITH_CUSTOMERS
 
 
 @dataclass(frozen=True)
@@ -391,6 +409,7 @@ def build_period_summary(
                 {
                     "name": item.name,
                     "is_liquid": item.is_liquid,
+                    "group_key": item.group_key,
                     "quantity": 0,
                     "revenue": 0.0,
                     "cost": 0.0,
@@ -415,6 +434,7 @@ def build_period_summary(
                 revenue=line["revenue"],
                 cost=line["cost"],
                 customers_count=line["customers"],
+                group_key=line["group_key"],
             )
             for category_id, line in categories.items()
         ),
@@ -450,6 +470,7 @@ def summary_from_report(report: Report, month_revenue: float = 0.0) -> ReportSum
             revenue=item.revenue,
             purchase_price=item.purchase_price_snapshot,
             customers_count=item.customers_count,
+            group_key=item.group_key,
         )
         for item in report.items
     ]

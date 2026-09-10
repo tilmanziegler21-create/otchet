@@ -25,7 +25,7 @@ from keyboards.admin import (
     CB_CITY_SALARY,
     CB_CITY_TOGGLE,
     CB_CLOSE,
-    CB_LIQUID_PREFIX,
+    CB_GROUP_PREFIX,
     CB_MENU,
     CB_CITY_PLAN,
     CB_PERIOD,
@@ -43,7 +43,7 @@ from keyboards.admin import (
     categories_menu,
     cities_menu,
     city_card_menu,
-    liquid_menu,
+    group_menu,
     period_cities_menu,
     period_menu,
     plan_months_menu,
@@ -85,7 +85,7 @@ class AdminStates(StatesGroup):
     waiting_price = State()
     waiting_category_name = State()
     waiting_category_price = State()
-    waiting_category_is_liquid = State()
+    waiting_category_group = State()
     waiting_city_name = State()
     waiting_salary_value = State()
     waiting_plan_value = State()
@@ -262,20 +262,24 @@ async def add_category_price(message: Message, state: FSMContext) -> None:
         await message.answer("Нужна сумма, например 3,20. Попробуйте еще раз:")
         return
     await state.update_data(new_category_price=price)
-    await state.set_state(AdminStates.waiting_category_is_liquid)
+    await state.set_state(AdminStates.waiting_category_group)
     await message.answer(
-        "Это жидкость? Жидкости участвуют в расчете UPD.",
-        reply_markup=liquid_menu(),
+        "В какую группу добавить позицию?\n\n"
+        "Клиентов и UPD бот спрашивает только по жидкостям и электронкам.",
+        reply_markup=group_menu(),
     )
 
 
 @router.callback_query(
-    AdminStates.waiting_category_is_liquid,
-    F.data.startswith(CB_LIQUID_PREFIX),
+    AdminStates.waiting_category_group,
+    F.data.startswith(CB_GROUP_PREFIX),
     IsAdmin(),
 )
 async def add_category_finish(callback: CallbackQuery, state: FSMContext) -> None:
-    is_liquid = (callback.data or "").endswith("1")
+    group_key = (callback.data or "")[len(CB_GROUP_PREFIX) :]
+    if group_key not in db.GROUP_TITLES:
+        await callback.answer("Неизвестная группа", show_alert=True)
+        return
     data = await state.get_data()
     name = data["new_category_name"]
     price = float(data["new_category_price"])
@@ -283,17 +287,17 @@ async def add_category_finish(callback: CallbackQuery, state: FSMContext) -> Non
         await state.clear()
         await callback.answer("Категория уже существует", show_alert=True)
         return
-    await db.add_category(name=name, purchase_price=price, is_liquid=is_liquid)
+    await db.add_category(name=name, purchase_price=price, group_key=group_key)
     await state.clear()
     if callback.message is not None:
         await callback.message.edit_text(
-            f"✅ Категория добавлена\n\n"
+            f"✅ Позиция добавлена\n\n"
             f"Название: <b>{escape(name)}</b>\n"
             f"Закупочная цена: {format_money(price)}\n"
-            f"Жидкость: {'да' if is_liquid else 'нет'}",
+            f"Группа: {db.GROUP_TITLES[group_key]}",
             reply_markup=back_menu(),
         )
-    await callback.answer("Категория появится в следующем отчете")
+    await callback.answer("Позиция появится в следующем отчете")
 
 
 # ----------------------------------------------------------------- города

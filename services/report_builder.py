@@ -6,7 +6,14 @@ from datetime import date
 from html import escape
 from typing import Sequence
 
-from database import SALARY_FIXED, SALARY_MONTHLY, Category, City, ReportBrief
+from database import (
+    GROUP_TITLES,
+    SALARY_FIXED,
+    SALARY_MONTHLY,
+    Category,
+    City,
+    ReportBrief,
+)
 from services.calculations import (
     BONUS_SHARE,
     MANAGER_SHARE,
@@ -42,19 +49,34 @@ def _header(
     return text
 
 
-def _category_blocks(summary: SummaryTotals) -> list[str]:
-    """Блоки по категориям и по жидкостям — общие для дня и для периода."""
-    parts = [
-        f"<b>{escape(line.name)}:</b>\n\n"
-        f"Количество — {format_quantity(line.quantity)}\n"
-        f"Выручка — {format_money(line.revenue)}\n"
-        f"Клиентов — {line.customers_count}\n"
-        f"Средний чек — {format_money(line.average_check)}\n"
-        f"UPD — {format_upd(line.upd)}\n"
-        f"Себестоимость — {format_money(line.cost)}\n"
-        f"Чистая прибыль — {format_money(summary.category_profit(line))}"
-        for line in summary.lines
+def _category_block(summary: SummaryTotals, line) -> str:
+    """Блок одной позиции: клиенты и UPD — только там, где их спрашивали."""
+    rows = [
+        f"<b>{escape(line.name)}:</b>",
+        "",
+        f"Количество — {format_quantity(line.quantity)}",
+        f"Выручка — {format_money(line.revenue)}",
     ]
+    if line.shows_customers:
+        rows.append(f"Клиентов — {line.customers_count}")
+    rows.append(f"Средний чек — {format_money(line.average_check)}")
+    if line.shows_customers:
+        rows.append(f"UPD — {format_upd(line.upd)}")
+    rows.append(f"Себестоимость — {format_money(line.cost)}")
+    rows.append(f"Чистая прибыль — {format_money(summary.category_profit(line))}")
+    return "\n".join(rows)
+
+
+def _category_blocks(summary: SummaryTotals) -> list[str]:
+    """Блоки по позициям (с заголовками групп), затем итог по жидкостям."""
+    parts: list[str] = []
+    current_group = None
+    for line in summary.lines:
+        if line.group_key != current_group:
+            current_group = line.group_key
+            title = GROUP_TITLES.get(current_group, current_group)
+            parts.append(f"<b>— {title.upper()} —</b>")
+        parts.append(_category_block(summary, line))
     parts.append(
         "<b>ВСЕ ЖИДКОСТИ:</b>\n\n"
         f"Количество — {format_quantity(summary.liquid_quantity)}\n"
@@ -186,17 +208,32 @@ def render_period_report(summary: PeriodSummary) -> str:
     return "\n\n".join(parts)
 
 
+def _employee_lines(summary: ReportSummary, with_revenue: bool = False) -> list[str]:
+    """Строки по позициям для работника: группами, без экономики."""
+    rows: list[str] = []
+    current_group = None
+    for line in summary.lines:
+        if line.group_key != current_group:
+            current_group = line.group_key
+            rows.append(f"<b>{GROUP_TITLES.get(current_group, current_group)}</b>")
+        text = f"{escape(line.name)} — {format_quantity(line.quantity)}"
+        if with_revenue:
+            text += f" / {format_money(line.revenue)}"
+        if line.shows_customers:
+            text += (
+                f" / {line.customers_count} клиентов / UPD {format_upd(line.upd)}"
+            )
+        rows.append(text)
+    return rows
+
+
 def render_employee_result(summary: ReportSummary) -> str:
     """Безопасная версия для работника — без закупок, себестоимости и прибыли."""
     lines = [
         f"Отчет за {_header(summary.report_date, summary.city_name)} сохранен ✅",
         "",
     ]
-    for line in summary.lines:
-        lines.append(
-            f"{escape(line.name)} — {format_quantity(line.quantity)} / "
-            f"{line.customers_count} клиентов / UPD {format_upd(line.upd)}"
-        )
+    lines.extend(_employee_lines(summary))
     lines.extend(
         [
             "",
@@ -213,12 +250,7 @@ def render_employee_summary(summary: ReportSummary) -> str:
     """Безопасный просмотр сохраненного отчета работником."""
     header = _header(summary.report_date, summary.city_name, full_date=True)
     lines = [f"<b>Отчет за {header}</b>", ""]
-    for line in summary.lines:
-        lines.append(
-            f"{escape(line.name)} — {format_quantity(line.quantity)} / "
-            f"{format_money(line.revenue)} / "
-            f"{line.customers_count} клиентов / UPD {format_upd(line.upd)}"
-        )
+    lines.extend(_employee_lines(summary, with_revenue=True))
     lines.extend(
         [
             "",
@@ -234,19 +266,29 @@ def render_employee_summary(summary: ReportSummary) -> str:
 
 def render_preview(
     report_date: date,
-    rows: Sequence[tuple[str, int, float, int]],
+    rows: Sequence[tuple[str, str, int, float, int | None]],
     customers_count: int,
     city_name: str | None = None,
     outreach: tuple[int, int, int, float] | None = None,
 ) -> str:
-    """Предпросмотр перед сохранением (данные работника, без экономики)."""
+    """Предпросмотр перед сохранением (данные работника, без экономики).
+
+    Строка: (группа, название, количество, выручка, клиенты или None).
+    """
     header = _header(report_date, city_name, full_date=True)
     lines = [f"<b>Проверьте отчет за {header}</b>", ""]
-    for name, quantity, revenue, clients in rows:
-        lines.append(
+    current_group = None
+    for group_key, name, quantity, revenue, clients in rows:
+        if group_key != current_group:
+            current_group = group_key
+            lines.append(f"<b>{GROUP_TITLES.get(group_key, group_key)}</b>")
+        text = (
             f"{escape(name)} — {format_quantity(quantity)} / "
-            f"{format_money(revenue)} / {clients} клиентов"
+            f"{format_money(revenue)}"
         )
+        if clients is not None:
+            text += f" / {clients} клиентов"
+        lines.append(text)
     lines.append("")
     lines.append(f"Покупателей — {customers_count}")
     if outreach is not None:
@@ -266,11 +308,14 @@ def render_prices(categories: Sequence[Category]) -> str:
     if not categories:
         return "Категорий пока нет."
     lines = ["<b>Текущие закупочные цены</b>", ""]
+    current_group = None
     for category in categories:
-        mark = "💧" if category.is_liquid else "🔧"
+        if category.group_key != current_group:
+            current_group = category.group_key
+            lines.append(f"<b>{category.group_title}</b>")
         status = "" if category.active else " (выключена)"
         lines.append(
-            f"{mark} {escape(category.name)}{status} — "
+            f"{escape(category.name)}{status} — "
             f"{format_money(category.purchase_price)}"
         )
     return "\n".join(lines)
