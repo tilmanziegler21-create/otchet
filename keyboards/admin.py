@@ -28,6 +28,9 @@ CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
+CB_REPORT_DELETE = "adm:rmask:"
+CB_REPORT_DEL_OK = "adm:rmok:"
+CB_REPORT_DEL_NO = "adm:rmno:"
 CB_GROUP_PREFIX = "adm:group:"
 CB_CLOSE = "adm:close"
 
@@ -247,6 +250,41 @@ def group_menu() -> InlineKeyboardMarkup:
                 )
             ]
             for key, title in GROUP_TITLES.items()
+        ]
+    )
+
+
+def report_card_menu(report_id: int) -> InlineKeyboardMarkup:
+    """Карточка отчета: удалить или вернуться в админ-панель."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить отчет",
+                    callback_data=f"{CB_REPORT_DELETE}{report_id}",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ В админ-панель", callback_data=CB_MENU)],
+        ]
+    )
+
+
+def confirm_delete_menu(report_id: int) -> InlineKeyboardMarkup:
+    """Второе нажатие — без него один промах стирает кассу месяца."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Да, удалить",
+                    callback_data=f"{CB_REPORT_DEL_OK}{report_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Оставить",
+                    callback_data=f"{CB_REPORT_DEL_NO}{report_id}",
+                )
+            ],
         ]
     )
 

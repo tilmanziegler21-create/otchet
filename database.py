@@ -696,6 +696,20 @@ async def get_report(report_id: int) -> Report | None:
         return await _fetch_report(db, row)
 
 
+async def delete_report(report_id: int) -> bool:
+    """Удаляет отчет и его позиции. False — такого отчета уже нет."""
+    async with _connect() as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute(
+            "DELETE FROM daily_report_items WHERE report_id = ?", (report_id,)
+        )
+        cursor = await db.execute(
+            "DELETE FROM daily_reports WHERE id = ?", (report_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def get_reports_by_date(
     report_date: str, employee_telegram_id: int | None = None
 ) -> list[Report]:

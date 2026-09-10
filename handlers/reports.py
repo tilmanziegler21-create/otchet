@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, Message
 
 import database as db
 from config import config
-from keyboards.admin import reports_menu
+from keyboards.admin import report_card_menu, reports_menu
 from keyboards.employee import (
     BTN_MY_REPORTS,
     BTN_TODAY_REPORT,
@@ -51,7 +51,8 @@ async def _send_today(message: Message) -> None:
         summary = await summary_for_report(report)
         if is_admin:
             await message.answer(
-                render_full_report(summary, f"ID {report.employee_telegram_id}")
+                render_full_report(summary, f"ID {report.employee_telegram_id}"),
+                reply_markup=report_card_menu(report.id),
             )
         else:
             await message.answer(render_employee_summary(summary))

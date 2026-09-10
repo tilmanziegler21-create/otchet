@@ -35,6 +35,9 @@ from keyboards.admin import (
     CB_PRICE_EDIT,
     CB_PRICE_SET,
     CB_PRICES,
+    CB_REPORT_DEL_NO,
+    CB_REPORT_DEL_OK,
+    CB_REPORT_DELETE,
     CB_REPORT_PREFIX,
     CB_REPORTS,
     CB_SALARY_KIND,
@@ -43,10 +46,12 @@ from keyboards.admin import (
     categories_menu,
     cities_menu,
     city_card_menu,
+    confirm_delete_menu,
     group_menu,
     period_cities_menu,
     period_menu,
     plan_months_menu,
+    report_card_menu,
     reports_menu,
     salary_kind_menu,
 )
@@ -657,6 +662,72 @@ async def show_report(callback: CallbackQuery) -> None:
     if callback.message is not None:
         await callback.message.answer(
             render_full_report(summary, f"ID {report.employee_telegram_id}"),
-            reply_markup=back_menu(),
+            reply_markup=report_card_menu(report.id),
         )
     await callback.answer()
+
+
+def _delete_label(report: db.Report) -> str:
+    header = dates.format_full(report.date)
+    if report.city_name:
+        header += f" · {escape(report.city_name)}"
+    return header
+
+
+@router.callback_query(F.data.startswith(CB_REPORT_DELETE), IsAdmin())
+async def ask_delete_report(callback: CallbackQuery) -> None:
+    raw_id = (callback.data or "")[len(CB_REPORT_DELETE) :]
+    if not raw_id.isdigit():
+        await callback.answer("Некорректный отчет", show_alert=True)
+        return
+    report = await db.get_report(int(raw_id))
+    if report is None:
+        await callback.answer("Отчет уже удален", show_alert=True)
+        return
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(
+            reply_markup=confirm_delete_menu(report.id)
+        )
+    await callback.answer(
+        f"Удалить {_delete_label(report)}? Он пропадет из кассы месяца.",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data.startswith(CB_REPORT_DEL_NO), IsAdmin())
+async def cancel_delete_report(callback: CallbackQuery) -> None:
+    raw_id = (callback.data or "")[len(CB_REPORT_DEL_NO) :]
+    if not raw_id.isdigit():
+        await callback.answer("Некорректный отчет", show_alert=True)
+        return
+    report = await db.get_report(int(raw_id))
+    if report is None:
+        await callback.answer("Отчет уже удален", show_alert=True)
+        return
+    if callback.message is not None:
+        await callback.message.edit_reply_markup(
+            reply_markup=report_card_menu(report.id)
+        )
+    await callback.answer("Оставлено")
+
+
+@router.callback_query(F.data.startswith(CB_REPORT_DEL_OK), IsAdmin())
+async def confirm_delete_report(callback: CallbackQuery) -> None:
+    raw_id = (callback.data or "")[len(CB_REPORT_DEL_OK) :]
+    if not raw_id.isdigit():
+        await callback.answer("Некорректный отчет", show_alert=True)
+        return
+    report_id = int(raw_id)
+    report = await db.get_report(report_id)
+    if report is None:
+        await callback.answer("Отчет уже удален", show_alert=True)
+        return
+    label = _delete_label(report)
+    await db.delete_report(report_id)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🗑 Отчет за {label} удален.\n\n"
+            "Он больше не входит в кассу месяца, недельные и месячные сводки.",
+            reply_markup=back_menu(),
+        )
+    await callback.answer("Удалено")
