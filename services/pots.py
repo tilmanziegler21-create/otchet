@@ -19,10 +19,11 @@ class PotBalance:
     title: str
     accrued: float
     paid: float
+    correction: float
 
     @property
     def balance(self) -> float:
-        return round_money(self.accrued - self.paid)
+        return round_money(self.accrued - self.paid + self.correction)
 
 
 async def pot_balances() -> tuple[PotBalance, ...]:
@@ -33,15 +34,31 @@ async def pot_balances() -> tuple[PotBalance, ...]:
         accrued[db.POT_CARLGAUSS] += summary.carlgauss
         accrued[db.POT_REMAINDER] += summary.remainder
     paid = await db.sum_payouts()
+    corrections = await db.sum_corrections()
     return tuple(
         PotBalance(
             pot=pot,
             title=db.POT_TITLES[pot],
             accrued=round_money(accrued[pot]),
             paid=round_money(paid[pot]),
+            correction=round_money(corrections[pot]),
         )
         for pot in db.POTS
     )
+
+
+async def set_pot_balance(pot: str, target: float, admin_telegram_id: int) -> PotBalance:
+    """Ставит фактический остаток: разница уходит в правку, отчеты не трогаем."""
+    item = balance_for(await pot_balances(), pot)
+    if item is None:
+        raise ValueError(f"Неизвестная копилка: {pot}")
+    delta = round_money(round_money(target) - item.balance)
+    if delta:
+        await db.add_correction(pot, delta, admin_telegram_id)
+    updated = balance_for(await pot_balances(), pot)
+    if updated is None:
+        raise ValueError(f"Неизвестная копилка: {pot}")
+    return updated
 
 
 def balance_for(balances: tuple[PotBalance, ...], pot: str) -> PotBalance | None:

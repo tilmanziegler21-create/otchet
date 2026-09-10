@@ -27,6 +27,7 @@ CB_EXPENSE_KIND = "adm:exp_kind:"
 CB_PLAN_MONTH = "adm:plan_month:"
 CB_POTS = "adm:pots"
 CB_PAY = "adm:pay:"
+CB_SET_POT = "adm:setpot:"
 CB_PERIOD_CITY = "adm:period_city:"
 CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
@@ -223,21 +224,29 @@ def expense_kind_menu(city_id: int) -> InlineKeyboardMarkup:
 
 
 def pots_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"💸 Выплатить {title}", callback_data=f"{CB_PAY}{pot}"
-                )
-            ]
-            for pot, title in (
-                ("carlgauss", "CARLGAUSS"),
-                ("manager", "менеджеру"),
-                ("remainder", "остаток"),
+    pots = (
+        ("carlgauss", "CARLGAUSS"),
+        ("manager", "менеджеру"),
+        ("remainder", "остаток"),
+    )
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"💸 Выплатить {title}", callback_data=f"{CB_PAY}{pot}"
             )
         ]
-        + [[InlineKeyboardButton(text="⬅️ В админ-панель", callback_data=CB_MENU)]]
+        for pot, title in pots
+    ]
+    rows.extend(
+        [
+            InlineKeyboardButton(
+                text=f"✏️ Остаток {title}", callback_data=f"{CB_SET_POT}{pot}"
+            )
+        ]
+        for pot, title in pots
     )
+    rows.append([InlineKeyboardButton(text="⬅️ В админ-панель", callback_data=CB_MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def period_cities_menu(kind: str, cities: Sequence[City]) -> InlineKeyboardMarkup:

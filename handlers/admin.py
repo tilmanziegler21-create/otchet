@@ -31,6 +31,7 @@ from keyboards.admin import (
     CB_CITY_PLAN,
     CB_EXPENSE_KIND,
     CB_PAY,
+    CB_SET_POT,
     CB_PERIOD,
     CB_PERIOD_CITY,
     CB_PICK_PREFIX,
@@ -63,6 +64,7 @@ from keyboards.admin import (
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
 from services.backup import send_backup
+from services.notifications import send_payout_to_admins
 from services.calculations import PERIOD_MONTH, PERIOD_WEEK
 from services.report_builder import (
     render_cities,
@@ -74,7 +76,7 @@ from services.report_builder import (
     render_prices,
     render_reports_list,
 )
-from services.pots import balance_for, pot_balances
+from services.pots import balance_for, pot_balances, set_pot_balance
 from services.report_service import (
     period_bounds,
     summary_for_period,
@@ -103,6 +105,7 @@ class AdminStates(StatesGroup):
     waiting_salary_value = State()
     waiting_expense_value = State()
     waiting_payout_amount = State()
+    waiting_pot_balance = State()
     waiting_plan_value = State()
 
 
@@ -627,8 +630,59 @@ async def save_payout(message: Message, state: FSMContext) -> None:
         return
     await db.add_payout(pot, amount, message.from_user.id)
     await state.clear()
+    updated = balance_for(await pot_balances(), pot)
+    actor = (
+        f"{message.from_user.full_name} / ID {message.from_user.id}"
+    )
     await message.answer(
         f"✅ Выплачено {format_money(amount)} — {escape(item.title)}\n\n"
+        + await _pots_text(),
+        reply_markup=pots_menu(),
+    )
+    if updated is not None:
+        await send_payout_to_admins(message.bot, updated, amount, actor)
+
+
+@router.callback_query(F.data.startswith(CB_SET_POT), IsAdmin())
+async def ask_pot_balance(callback: CallbackQuery, state: FSMContext) -> None:
+    pot = (callback.data or "")[len(CB_SET_POT) :]
+    item = balance_for(await pot_balances(), pot)
+    if item is None:
+        await callback.answer("Неизвестная копилка", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_pot_balance)
+    await state.update_data(set_pot=pot)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"<b>{escape(item.title)}</b>\n\n"
+            f"Сейчас в копилке {format_money(item.balance)} "
+            f"(накоплено {format_money(item.accrued)}, "
+            f"выплачено {format_money(item.paid)}"
+            + (
+                f", правка {format_money(item.correction)}"
+                if item.correction
+                else ""
+            )
+            + ").\n\n"
+            f"Какой должен быть фактический остаток (в {config.currency})?\n"
+            "Новые отчеты после этого снова будут прибавляться сверху."
+        )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_pot_balance, IsAdmin(), F.text)
+async def save_pot_balance(message: Message, state: FSMContext) -> None:
+    amount = parse_amount(message.text)
+    if amount is None:
+        await message.answer("Нужна сумма, например 0 или 12,50:")
+        return
+    data = await state.get_data()
+    if message.from_user is None:
+        return
+    updated = await set_pot_balance(data["set_pot"], amount, message.from_user.id)
+    await state.clear()
+    await message.answer(
+        f"✅ Остаток {escape(updated.title)} поставлен {format_money(updated.balance)}\n\n"
         + await _pots_text(),
         reply_markup=pots_menu(),
     )

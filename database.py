@@ -144,6 +144,14 @@ CREATE TABLE IF NOT EXISTS payouts (
     created_at         TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pot_corrections (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    pot                TEXT    NOT NULL,
+    amount             REAL    NOT NULL,
+    admin_telegram_id  INTEGER NOT NULL,
+    created_at         TEXT    NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_reports_date ON daily_reports(date);
 
 CREATE TABLE IF NOT EXISTS daily_report_items (
@@ -353,6 +361,17 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS payouts (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pot                TEXT    NOT NULL,
+            amount             REAL    NOT NULL,
+            admin_telegram_id  INTEGER NOT NULL,
+            created_at         TEXT    NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pot_corrections (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             pot                TEXT    NOT NULL,
             amount             REAL    NOT NULL,
@@ -979,3 +998,34 @@ async def list_payouts(limit: int = 10) -> list[Payout]:
         )
         for row in rows
     ]
+
+
+async def add_correction(pot: str, amount: float, admin_telegram_id: int) -> int:
+    """Правка остатка копилки: плюс добавляет, минус снимает."""
+    if pot not in POTS:
+        raise ValueError(f"Неизвестная копилка: {pot}")
+    async with _connect() as db:
+        cursor = await db.execute(
+            "INSERT INTO pot_corrections (pot, amount, admin_telegram_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                pot,
+                float(amount),
+                admin_telegram_id,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def sum_corrections() -> dict[str, float]:
+    totals = {pot: 0.0 for pot in POTS}
+    async with _connect() as db:
+        cursor = await db.execute(
+            "SELECT pot, COALESCE(SUM(amount), 0) FROM pot_corrections GROUP BY pot"
+        )
+        for pot, amount in await cursor.fetchall():
+            if pot in totals:
+                totals[pot] = float(amount)
+    return totals

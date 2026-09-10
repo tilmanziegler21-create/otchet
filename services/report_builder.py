@@ -266,6 +266,8 @@ def render_employee_result(summary: ReportSummary) -> str:
             f"Продано жидкостей: {summary.liquid_quantity}",
             f"UPD: {format_upd(summary.upd)}",
             f"Общая выручка: {format_money(summary.total_revenue)}",
+            f"Менеджеру ({_percent_label(MANAGER_SHARE)}): "
+            f"{format_money(summary.manager_amount)}",
             _outreach_line(summary),
         ]
     )
@@ -284,6 +286,8 @@ def render_employee_summary(summary: ReportSummary) -> str:
             f"Покупателей: {summary.customers_count}",
             f"UPD: {format_upd(summary.upd)}",
             f"Общая выручка: {format_money(summary.total_revenue)}",
+            f"Менеджеру ({_percent_label(MANAGER_SHARE)}): "
+            f"{format_money(summary.manager_amount)}",
             _outreach_line(summary),
         ]
     )
@@ -403,6 +407,11 @@ def render_pots(
             f"<b>{escape(item.title)}</b> — {format_money(item.balance)}\n"
             f"накоплено {format_money(item.accrued)}, "
             f"выплачено {format_money(item.paid)}"
+            + (
+                f", правка {format_money(item.correction)}"
+                if item.correction
+                else ""
+            )
         )
     if payouts:
         lines.append("")
