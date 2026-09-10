@@ -22,7 +22,11 @@ CB_CITY_TOGGLE = "adm:city_toggle:"
 CB_CITY_SALARY = "adm:city_salary:"
 CB_SALARY_KIND = "adm:salary_kind:"
 CB_CITY_PLAN = "adm:city_plan:"
+CB_CITY_EXPENSE = "adm:city_exp:"
+CB_EXPENSE_KIND = "adm:exp_kind:"
 CB_PLAN_MONTH = "adm:plan_month:"
+CB_POTS = "adm:pots"
+CB_PAY = "adm:pay:"
 CB_PERIOD_CITY = "adm:period_city:"
 CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
@@ -75,6 +79,7 @@ def admin_menu() -> InlineKeyboardMarkup:
                     text="🗂 Сохраненные отчеты", callback_data=CB_REPORTS
                 )
             ],
+            [InlineKeyboardButton(text="🏦 Касса", callback_data=CB_POTS)],
             [InlineKeyboardButton(text="✖️ Закрыть", callback_data=CB_CLOSE)],
         ]
     )
@@ -142,6 +147,12 @@ def city_card_menu(city: City) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="📦 Фикс-расход",
+                    callback_data=f"{CB_CITY_EXPENSE}{city.id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="🚫 Выключить город" if city.active else "✅ Включить город",
                     callback_data=f"{CB_CITY_TOGGLE}{city.id}",
                 )
@@ -178,6 +189,54 @@ def salary_kind_menu(city_id: int) -> InlineKeyboardMarkup:
                 )
             ],
         ]
+    )
+
+
+def expense_kind_menu(city_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🚫 Нет расхода",
+                    callback_data=f"{CB_EXPENSE_KIND}none:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💶 Фикс за день",
+                    callback_data=f"{CB_EXPENSE_KIND}fixed:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗓 Фикс за месяц",
+                    callback_data=f"{CB_EXPENSE_KIND}monthly:{city_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад", callback_data=f"{CB_CITY_CARD}{city_id}"
+                )
+            ],
+        ]
+    )
+
+
+def pots_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"💸 Выплатить {title}", callback_data=f"{CB_PAY}{pot}"
+                )
+            ]
+            for pot, title in (
+                ("carlgauss", "CARLGAUSS"),
+                ("manager", "менеджеру"),
+                ("remainder", "остаток"),
+            )
+        ]
+        + [[InlineKeyboardButton(text="⬅️ В админ-панель", callback_data=CB_MENU)]]
     )
 
 

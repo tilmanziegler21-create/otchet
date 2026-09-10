@@ -31,6 +31,7 @@ COMMANDS = (
     BotCommand(command="week", description="Отчет за неделю (админ)"),
     BotCommand(command="month", description="Отчет за месяц (админ)"),
     BotCommand(command="backup", description="Копия базы (админ)"),
+    BotCommand(command="pots", description="Касса и выплаты (админ)"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
 )
 

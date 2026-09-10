@@ -27,13 +27,17 @@ from keyboards.admin import (
     CB_CLOSE,
     CB_GROUP_PREFIX,
     CB_MENU,
+    CB_CITY_EXPENSE,
     CB_CITY_PLAN,
+    CB_EXPENSE_KIND,
+    CB_PAY,
     CB_PERIOD,
     CB_PERIOD_CITY,
     CB_PICK_PREFIX,
     CB_PLAN_MONTH,
     CB_PRICE_EDIT,
     CB_PRICE_SET,
+    CB_POTS,
     CB_PRICES,
     CB_REPORT_DEL_NO,
     CB_REPORT_DEL_OK,
@@ -47,7 +51,9 @@ from keyboards.admin import (
     cities_menu,
     city_card_menu,
     confirm_delete_menu,
+    expense_kind_menu,
     group_menu,
+    pots_menu,
     period_cities_menu,
     period_menu,
     plan_months_menu,
@@ -64,9 +70,11 @@ from services.report_builder import (
     render_full_report,
     render_period_report,
     render_plans,
+    render_pots,
     render_prices,
     render_reports_list,
 )
+from services.pots import balance_for, pot_balances
 from services.report_service import (
     period_bounds,
     summary_for_period,
@@ -93,6 +101,8 @@ class AdminStates(StatesGroup):
     waiting_category_group = State()
     waiting_city_name = State()
     waiting_salary_value = State()
+    waiting_expense_value = State()
+    waiting_payout_amount = State()
     waiting_plan_value = State()
 
 
@@ -463,6 +473,164 @@ async def save_salary_value(message: Message, state: FSMContext) -> None:
     await message.answer(
         "✅ Ставка сохранена.\n\n" + await _city_card_text(city),
         reply_markup=city_card_menu(city),
+    )
+
+
+# --------------------------------------------------------- фикс-расход города
+
+
+@router.callback_query(F.data.startswith(CB_CITY_EXPENSE), IsAdmin())
+async def choose_expense_kind(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    city = await _resolve_city(callback, CB_CITY_EXPENSE)
+    if city is None:
+        return
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🏙 <b>{escape(city.name)}</b>\n\n"
+            "Доп. расход города — помимо курьеров. Идет в чистую.",
+            reply_markup=expense_kind_menu(city.id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_EXPENSE_KIND), IsAdmin())
+async def ask_expense_value(callback: CallbackQuery, state: FSMContext) -> None:
+    payload = (callback.data or "")[len(CB_EXPENSE_KIND) :]
+    kind, _, raw_id = payload.partition(":")
+    if kind not in db.EXPENSE_KINDS or not raw_id.isdigit():
+        await callback.answer("Некорректный выбор", show_alert=True)
+        return
+    city = await db.get_city(int(raw_id))
+    if city is None:
+        await callback.answer("Город не найден", show_alert=True)
+        return
+
+    if kind == db.EXPENSE_NONE:
+        await db.set_city_expense(city.id, db.EXPENSE_NONE, 0)
+        updated = await db.get_city(city.id)
+        if callback.message is not None and updated is not None:
+            await callback.message.edit_text(
+                "✅ Расход снят.\n\n" + await _city_card_text(updated),
+                reply_markup=city_card_menu(updated),
+            )
+        await callback.answer("Расхода нет")
+        return
+
+    await state.set_state(AdminStates.waiting_expense_value)
+    await state.update_data(expense_city_id=city.id, expense_kind=kind)
+    prompt = (
+        f"Введите сумму за день (в {config.currency}):"
+        if kind == db.EXPENSE_FIXED
+        else (
+            f"Введите сумму за месяц (в {config.currency}).\n\n"
+            "В дневном отчете она делится на число дней этого месяца."
+        )
+    )
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🏙 <b>{escape(city.name)}</b>\n\n{prompt}"
+        )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_expense_value, IsAdmin(), F.text)
+async def save_expense_value(message: Message, state: FSMContext) -> None:
+    value = parse_amount(message.text)
+    if value is None:
+        await message.answer("Нужна сумма, например 80 или 300:")
+        return
+    data = await state.get_data()
+    city_id = int(data["expense_city_id"])
+    await db.set_city_expense(city_id, data["expense_kind"], value)
+    await state.clear()
+    city = await db.get_city(city_id)
+    if city is None:
+        await message.answer("Город не найден.", reply_markup=admin_menu())
+        return
+    await message.answer(
+        "✅ Расход сохранен.\n\n" + await _city_card_text(city),
+        reply_markup=city_card_menu(city),
+    )
+
+
+# --------------------------------------------------------- касса и выплаты
+
+
+async def _pots_text() -> str:
+    return render_pots(await pot_balances(), await db.list_payouts(8))
+
+
+@router.message(Command("pots"), IsAdmin())
+async def cmd_pots(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(await _pots_text(), reply_markup=pots_menu())
+
+
+@router.message(Command("pots"), IsNotAdmin())
+async def cmd_pots_denied(message: Message) -> None:
+    await message.answer("Команда недоступна.")
+
+
+@router.callback_query(F.data == CB_POTS, IsAdmin())
+async def show_pots(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    if callback.message is not None:
+        await callback.message.edit_text(
+            await _pots_text(), reply_markup=pots_menu()
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(CB_PAY), IsAdmin())
+async def ask_payout(callback: CallbackQuery, state: FSMContext) -> None:
+    pot = (callback.data or "")[len(CB_PAY) :]
+    item = balance_for(await pot_balances(), pot)
+    if item is None:
+        await callback.answer("Неизвестная копилка", show_alert=True)
+        return
+    if item.balance <= 0:
+        await callback.answer("В этой копилке пока нечего выплачивать", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_payout_amount)
+    await state.update_data(payout_pot=pot)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"<b>{escape(item.title)}</b>\n\n"
+            f"Сейчас в копилке {format_money(item.balance)}.\n"
+            f"Какую сумму выплатить (в {config.currency})?"
+        )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_payout_amount, IsAdmin(), F.text)
+async def save_payout(message: Message, state: FSMContext) -> None:
+    amount = parse_amount(message.text)
+    data = await state.get_data()
+    pot = data["payout_pot"]
+    item = balance_for(await pot_balances(), pot)
+    if item is None:
+        await state.clear()
+        await message.answer("Копилка не найдена.", reply_markup=admin_menu())
+        return
+    if amount is None or amount <= 0:
+        await message.answer(
+            f"Нужна сумма больше нуля, не больше {format_money(item.balance)}:"
+        )
+        return
+    if amount - item.balance > 0.001:
+        await message.answer(
+            f"В копилке только {format_money(item.balance)}. Введите сумму заново:"
+        )
+        return
+    if message.from_user is None:
+        return
+    await db.add_payout(pot, amount, message.from_user.id)
+    await state.clear()
+    await message.answer(
+        f"✅ Выплачено {format_money(amount)} — {escape(item.title)}\n\n"
+        + await _pots_text(),
+        reply_markup=pots_menu(),
     )
 
 

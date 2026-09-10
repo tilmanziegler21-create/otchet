@@ -19,6 +19,23 @@ SALARY_FIXED = "fixed"  # фиксированная сумма за день
 SALARY_MONTHLY = "monthly"  # фикс за месяц, в отчете делится на дни месяца
 SALARY_KINDS = (SALARY_PERCENT, SALARY_FIXED, SALARY_MONTHLY)
 
+# Доп. расход города помимо курьеров — в чистую, не в UPD.
+EXPENSE_NONE = "none"
+EXPENSE_FIXED = "fixed"
+EXPENSE_MONTHLY = "monthly"
+EXPENSE_KINDS = (EXPENSE_NONE, EXPENSE_FIXED, EXPENSE_MONTHLY)
+
+# Три общие копилки: накапливаются из отчетов, снимаются выплатой.
+POT_MANAGER = "manager"
+POT_CARLGAUSS = "carlgauss"
+POT_REMAINDER = "remainder"
+POTS = (POT_MANAGER, POT_CARLGAUSS, POT_REMAINDER)
+POT_TITLES = {
+    POT_MANAGER: "Менеджеру",
+    POT_CARLGAUSS: "CARLGAUSS",
+    POT_REMAINDER: "Остаток",
+}
+
 # Группы товаров: определяют порядок в отчете и то, какие вопросы задавать.
 GROUP_LIQUID = "liquid"
 GROUP_DEVICE = "device"
@@ -84,11 +101,13 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 
 CREATE TABLE IF NOT EXISTS cities (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT    NOT NULL UNIQUE,
-    salary_kind  TEXT    NOT NULL DEFAULT 'percent',
-    salary_value REAL    NOT NULL DEFAULT 0,
-    active       INTEGER NOT NULL DEFAULT 1
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT    NOT NULL UNIQUE,
+    salary_kind    TEXT    NOT NULL DEFAULT 'percent',
+    salary_value   REAL    NOT NULL DEFAULT 0,
+    expense_kind   TEXT    NOT NULL DEFAULT 'none',
+    expense_value  REAL    NOT NULL DEFAULT 0,
+    active         INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS monthly_plans (
@@ -111,8 +130,18 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     touches               INTEGER NOT NULL DEFAULT 0,
     replies               INTEGER NOT NULL DEFAULT 0,
     purchases             INTEGER NOT NULL DEFAULT 0,
-    extra_revenue         REAL    NOT NULL DEFAULT 0,
-    created_at            TEXT    NOT NULL
+    extra_revenue          REAL    NOT NULL DEFAULT 0,
+    expense_kind_snapshot  TEXT    NOT NULL DEFAULT 'none',
+    expense_value_snapshot REAL    NOT NULL DEFAULT 0,
+    created_at             TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payouts (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    pot                TEXT    NOT NULL,
+    amount             REAL    NOT NULL,
+    admin_telegram_id  INTEGER NOT NULL,
+    created_at         TEXT    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_reports_date ON daily_reports(date);
@@ -156,6 +185,8 @@ class City:
     name: str
     salary_kind: str
     salary_value: float
+    expense_kind: str
+    expense_value: float
     active: bool
 
 
@@ -187,8 +218,23 @@ class Report:
     replies: int
     purchases: int
     extra_revenue: float
+    expense_kind: str
+    expense_value: float
     created_at: str
     items: tuple[ReportItem, ...]
+
+
+@dataclass(frozen=True)
+class Payout:
+    id: int
+    pot: str
+    amount: float
+    admin_telegram_id: int
+    created_at: str
+
+    @property
+    def title(self) -> str:
+        return POT_TITLES.get(self.pot, self.pot)
 
 
 @dataclass(frozen=True)
@@ -284,6 +330,37 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         await db.execute(
             "ALTER TABLE cities ADD COLUMN salary_value REAL NOT NULL DEFAULT 0"
         )
+    if "expense_kind" not in cities:
+        await db.execute(
+            "ALTER TABLE cities ADD COLUMN expense_kind TEXT NOT NULL DEFAULT 'none'"
+        )
+    if "expense_value" not in cities:
+        await db.execute(
+            "ALTER TABLE cities ADD COLUMN expense_value REAL NOT NULL DEFAULT 0"
+        )
+
+    if "expense_kind_snapshot" not in reports:
+        await db.execute(
+            "ALTER TABLE daily_reports ADD COLUMN expense_kind_snapshot TEXT "
+            "NOT NULL DEFAULT 'none'"
+        )
+    if "expense_value_snapshot" not in reports:
+        await db.execute(
+            "ALTER TABLE daily_reports ADD COLUMN expense_value_snapshot REAL "
+            "NOT NULL DEFAULT 0"
+        )
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payouts (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pot                TEXT    NOT NULL,
+            amount             REAL    NOT NULL,
+            admin_telegram_id  INTEGER NOT NULL,
+            created_at         TEXT    NOT NULL
+        )
+        """
+    )
 
 
 class StorageError(RuntimeError):
@@ -450,11 +527,16 @@ def _city_from_row(row: aiosqlite.Row) -> City:
         name=row["name"],
         salary_kind=row["salary_kind"],
         salary_value=float(row["salary_value"]),
+        expense_kind=row["expense_kind"] or EXPENSE_NONE,
+        expense_value=float(row["expense_value"] or 0),
         active=bool(row["active"]),
     )
 
 
-_CITY_SELECT = "SELECT id, name, salary_kind, salary_value, active FROM cities"
+_CITY_SELECT = (
+    "SELECT id, name, salary_kind, salary_value, expense_kind, expense_value, "
+    "active FROM cities"
+)
 
 
 async def get_cities(only_active: bool = True) -> list[City]:
@@ -504,6 +586,22 @@ async def set_city_salary(city_id: int, salary_kind: str, salary_value: float) -
         await db.execute(
             "UPDATE cities SET salary_kind = ?, salary_value = ? WHERE id = ?",
             (salary_kind, float(salary_value), city_id),
+        )
+        await db.commit()
+
+
+async def set_city_expense(
+    city_id: int, expense_kind: str, expense_value: float
+) -> None:
+    """Доп. расход города: нет, фикс за день или фикс за месяц."""
+    if expense_kind not in EXPENSE_KINDS:
+        raise ValueError(f"Неизвестный тип расхода: {expense_kind}")
+    if expense_kind == EXPENSE_NONE:
+        expense_value = 0.0
+    async with _connect() as db:
+        await db.execute(
+            "UPDATE cities SET expense_kind = ?, expense_value = ? WHERE id = ?",
+            (expense_kind, float(expense_value), city_id),
         )
         await db.commit()
 
@@ -583,6 +681,8 @@ async def save_report(
     replies: int = 0,
     purchases: int = 0,
     extra_revenue: float = 0.0,
+    expense_kind: str = EXPENSE_NONE,
+    expense_value: float = 0.0,
 ) -> int:
     """items: (category_id, quantity, revenue, purchase_price, customers_count)."""
     async with _connect() as db:
@@ -592,8 +692,8 @@ async def save_report(
             "(date, city_id, employee_telegram_id, customers_count, "
             " salary_kind_snapshot, salary_value_snapshot, bonus_snapshot, "
             " plan_snapshot, touches, replies, purchases, extra_revenue, "
-            " created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " expense_kind_snapshot, expense_value_snapshot, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 report_date,
                 city_id,
@@ -607,6 +707,8 @@ async def save_report(
                 int(replies),
                 int(purchases),
                 float(extra_revenue),
+                expense_kind,
+                float(expense_value),
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
@@ -670,6 +772,18 @@ async def _fetch_report(db: aiosqlite.Connection, row: aiosqlite.Row) -> Report:
         replies=int(row["replies"] or 0),
         purchases=int(row["purchases"] or 0),
         extra_revenue=float(row["extra_revenue"] or 0),
+        expense_kind=(
+            row["expense_kind_snapshot"]
+            if "expense_kind_snapshot" in row.keys()
+            else EXPENSE_NONE
+        )
+        or EXPENSE_NONE,
+        expense_value=float(
+            row["expense_value_snapshot"]
+            if "expense_value_snapshot" in row.keys()
+            else 0
+        )
+        or 0,
         created_at=row["created_at"],
         items=items,
     )
@@ -680,7 +794,8 @@ _REPORT_SELECT = (
     "       r.employee_telegram_id, r.customers_count, "
     "       r.salary_kind_snapshot, r.salary_value_snapshot, "
     "       r.bonus_snapshot, r.plan_snapshot, "
-    "       r.touches, r.replies, r.purchases, r.extra_revenue, r.created_at "
+    "       r.touches, r.replies, r.purchases, r.extra_revenue, "
+    "       r.expense_kind_snapshot, r.expense_value_snapshot, r.created_at "
     "FROM daily_reports AS r "
     "LEFT JOIN cities AS ci ON ci.id = r.city_id "
 )
@@ -804,6 +919,63 @@ async def list_reports(
             customers_count=int(row["customers_count"]),
             total_quantity=int(row["total_quantity"]),
             total_revenue=float(row["total_revenue"]),
+        )
+        for row in rows
+    ]
+
+
+async def get_all_reports() -> list[Report]:
+    """Все дневные отчеты — из них собирается накопительная касса."""
+    return await get_reports_between("0001-01-01", "9999-12-31")
+
+
+async def add_payout(pot: str, amount: float, admin_telegram_id: int) -> int:
+    if pot not in POTS:
+        raise ValueError(f"Неизвестная копилка: {pot}")
+    async with _connect() as db:
+        cursor = await db.execute(
+            "INSERT INTO payouts (pot, amount, admin_telegram_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                pot,
+                float(amount),
+                admin_telegram_id,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def sum_payouts() -> dict[str, float]:
+    """Сколько уже выплатили из каждой копилки."""
+    totals = {pot: 0.0 for pot in POTS}
+    async with _connect() as db:
+        cursor = await db.execute(
+            "SELECT pot, COALESCE(SUM(amount), 0) FROM payouts GROUP BY pot"
+        )
+        for pot, amount in await cursor.fetchall():
+            if pot in totals:
+                totals[pot] = float(amount)
+    return totals
+
+
+async def list_payouts(limit: int = 10) -> list[Payout]:
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, pot, amount, admin_telegram_id, created_at "
+            "FROM payouts ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+    return [
+        Payout(
+            id=row["id"],
+            pot=row["pot"],
+            amount=float(row["amount"]),
+            admin_telegram_id=row["admin_telegram_id"],
+            created_at=row["created_at"],
         )
         for row in rows
     ]

@@ -7,7 +7,8 @@
     работникам      = процент от оборота, фикс за день
                       или фикс за месяц / число дней месяца
     перевыполнение  = 25% от кассы месяца, превысившей план города
-    чистая          = оборот - менеджеру - работникам - перевыполнение - закуп
+    чистая          = оборот - менеджеру - работникам - перевыполнение
+                      - фикс-расход города - закуп
     CARLGAUSS       = 1/4 чистой
     ОСТАТОК         = чистая - CARLGAUSS
 """
@@ -19,6 +20,9 @@ from datetime import date
 from typing import Sequence
 
 from database import (
+    EXPENSE_FIXED,
+    EXPENSE_MONTHLY,
+    EXPENSE_NONE,
     GROUP_LIQUID,
     GROUPS_WITH_CUSTOMERS,
     SALARY_FIXED,
@@ -76,8 +80,27 @@ def calculate_bonus(
     return (after - before) * BONUS_SHARE
 
 
+def calculate_expense(
+    expense_kind: str,
+    expense_value: float,
+    report_date: date | None = None,
+) -> float:
+    """Доп. расход города: фикс за день, фикс за месяц / дни, либо ноль."""
+    if expense_kind == EXPENSE_FIXED:
+        return float(expense_value)
+    if expense_kind == EXPENSE_MONTHLY:
+        days = dates.days_in_month(report_date) if report_date else 30
+        return float(expense_value) / days
+    return 0.0
+
+
 def calculate_net_profit(
-    revenue: float, cost: float, salary: float, manager: float, bonus: float = 0.0
+    revenue: float,
+    cost: float,
+    salary: float,
+    manager: float,
+    bonus: float = 0.0,
+    expense: float = 0.0,
 ) -> float:
     """Единственное место с формулой чистой прибыли."""
     return (
@@ -85,6 +108,7 @@ def calculate_net_profit(
         - float(manager)
         - float(salary)
         - float(bonus)
+        - float(expense)
         - float(cost)
     )
 
@@ -171,8 +195,13 @@ class SummaryTotals:
 
     @property
     def deductions(self) -> float:
-        """Все, что уходит людям: менеджеру, работникам и за перевыполнение."""
-        return self.manager_amount + self.salary_amount + self.bonus
+        """Все, что уходит людям и на фикс-расход города."""
+        return (
+            self.manager_amount
+            + self.salary_amount
+            + self.bonus
+            + self.expense_amount
+        )
 
     @property
     def net_profit(self) -> float:
@@ -183,6 +212,7 @@ class SummaryTotals:
             self.salary_amount,
             self.manager_amount,
             self.bonus,
+            self.expense_amount,
         )
 
     @property
@@ -253,6 +283,8 @@ class ReportSummary(SummaryTotals):
     replies: int = 0
     purchases: int = 0
     extra_revenue: float = 0.0
+    expense_kind: str = EXPENSE_NONE
+    expense_value: float = 0.0
     report_id: int | None = None
     employee_telegram_id: int | None = None
 
@@ -264,6 +296,12 @@ class ReportSummary(SummaryTotals):
     def salary_amount(self) -> float:
         return calculate_salary(
             self.total_revenue, self.salary_kind, self.salary_value, self.report_date
+        )
+
+    @property
+    def expense_amount(self) -> float:
+        return calculate_expense(
+            self.expense_kind, self.expense_value, self.report_date
         )
 
 
@@ -281,6 +319,8 @@ def build_summary(
     replies: int = 0,
     purchases: int = 0,
     extra_revenue: float = 0.0,
+    expense_kind: str = EXPENSE_NONE,
+    expense_value: float = 0.0,
     report_id: int | None = None,
     employee_telegram_id: int | None = None,
 ) -> ReportSummary:
@@ -298,6 +338,8 @@ def build_summary(
         replies=replies,
         purchases=purchases,
         extra_revenue=extra_revenue,
+        expense_kind=expense_kind,
+        expense_value=expense_value,
         report_id=report_id,
         employee_telegram_id=employee_telegram_id,
     )
@@ -354,12 +396,14 @@ class PeriodSummary(SummaryTotals):
     customers_count: int
     salary_amount: float
     bonus: float
+    expense_amount: float = 0.0
     touches: int = 0
     replies: int = 0
     purchases: int = 0
     extra_revenue: float = 0.0
     city_name: str | None = None
     salary_rate: tuple[str, float] | None = None
+    expense_rate: tuple[str, float] | None = None
 
     @property
     def manager_amount(self) -> float:
@@ -382,19 +426,27 @@ def build_period_summary(
     days: dict[str, dict] = {}
     salary_amount = 0.0
     bonus = 0.0
+    expense_amount = 0.0
     rates: set[tuple[str, float]] = set()
+    expense_rates: set[tuple[str, float]] = set()
 
     for report in reports:
         report_revenue = sum(item.revenue for item in report.items)
         report_quantity = sum(item.quantity for item in report.items)
+        report_date = dates.from_db(report.date)
         salary_amount += calculate_salary(
             report_revenue,
             report.salary_kind,
             report.salary_value,
-            dates.from_db(report.date),
+            report_date,
+        )
+        expense_amount += calculate_expense(
+            report.expense_kind, report.expense_value, report_date
         )
         bonus += report.bonus
         rates.add((report.salary_kind, report.salary_value))
+        if report.expense_kind != EXPENSE_NONE:
+            expense_rates.add((report.expense_kind, report.expense_value))
 
         day = days.setdefault(
             report.date, {"quantity": 0, "revenue": 0.0, "customers": 0}
@@ -450,12 +502,14 @@ def build_period_summary(
         customers_count=sum(day["customers"] for day in days.values()),
         salary_amount=salary_amount,
         bonus=bonus,
+        expense_amount=expense_amount,
         touches=sum(report.touches for report in reports),
         replies=sum(report.replies for report in reports),
         purchases=sum(report.purchases for report in reports),
         extra_revenue=sum(report.extra_revenue for report in reports),
         city_name=city_name,
         salary_rate=rates.pop() if len(rates) == 1 else None,
+        expense_rate=expense_rates.pop() if len(expense_rates) == 1 else None,
     )
 
 
@@ -488,6 +542,8 @@ def summary_from_report(report: Report, month_revenue: float = 0.0) -> ReportSum
         replies=report.replies,
         purchases=report.purchases,
         extra_revenue=report.extra_revenue,
+        expense_kind=report.expense_kind,
+        expense_value=report.expense_value,
         report_id=report.id,
         employee_telegram_id=report.employee_telegram_id,
     )

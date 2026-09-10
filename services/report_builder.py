@@ -7,11 +7,15 @@ from html import escape
 from typing import Sequence
 
 from database import (
+    EXPENSE_FIXED,
+    EXPENSE_MONTHLY,
+    EXPENSE_NONE,
     GROUP_TITLES,
     SALARY_FIXED,
     SALARY_MONTHLY,
     Category,
     City,
+    Payout,
     ReportBrief,
 )
 from services.calculations import (
@@ -22,6 +26,7 @@ from services.calculations import (
     ReportSummary,
     SummaryTotals,
 )
+from services.pots import PotBalance
 from utils import dates
 from utils.formatting import format_amount, format_money, format_quantity, format_upd
 
@@ -37,6 +42,15 @@ def format_salary_rate(salary_kind: str, salary_value: float) -> str:
     if salary_kind == SALARY_MONTHLY:
         return f"{format_money(salary_value)} в месяц"
     return f"{format_amount(salary_value, 2)}%"
+
+
+def format_expense_rate(expense_kind: str, expense_value: float) -> str:
+    """'нет', '80€ в день' или '300€ в месяц'."""
+    if expense_kind == EXPENSE_FIXED:
+        return f"{format_money(expense_value)} в день"
+    if expense_kind == EXPENSE_MONTHLY:
+        return f"{format_money(expense_value)} в месяц"
+    return "нет"
 
 
 def _header(
@@ -132,6 +146,11 @@ def render_full_report(summary: ReportSummary, employee_label: str | None = None
         f"{format_money(summary.manager_amount)}"
     )
     parts.append(f"РАБОТНИКАМ ({rate}) — {format_money(summary.salary_amount)}")
+    if summary.expense_amount or summary.expense_kind != EXPENSE_NONE:
+        parts.append(
+            f"РАСХОД ({format_expense_rate(summary.expense_kind, summary.expense_value)}) "
+            f"— {format_money(summary.expense_amount)}"
+        )
 
     if summary.plan > 0:
         over = summary.month_revenue - summary.plan
@@ -196,6 +215,13 @@ def render_period_report(summary: PeriodSummary) -> str:
         f" ({format_salary_rate(*summary.salary_rate)})" if summary.salary_rate else ""
     )
     parts.append(f"РАБОТНИКАМ{rate} — {format_money(summary.salary_amount)}")
+    if summary.expense_amount:
+        expense = (
+            f" ({format_expense_rate(*summary.expense_rate)})"
+            if summary.expense_rate
+            else ""
+        )
+        parts.append(f"РАСХОД{expense} — {format_money(summary.expense_amount)}")
     if summary.bonus:
         parts.append(
             f"ПЕРЕВЫПОЛНЕНИЕ ({_percent_label(BONUS_SHARE)}) — "
@@ -361,9 +387,32 @@ def render_city_card(city: City, plan: float = 0.0, plan_month: str = "") -> str
         f"🏙 <b>{escape(city.name)}</b>\n\n"
         f"Статус: {'включен' if city.active else 'выключен'}\n"
         f"Минус работникам: {rate}\n"
+        f"Фикс-расход: {format_expense_rate(city.expense_kind, city.expense_value)}\n"
         f"План{month_text}: {plan_text}\n"
         f"Менеджеру: {_percent_label(MANAGER_SHARE)} от оборота (во всех городах)"
     )
+
+
+def render_pots(
+    balances: Sequence[PotBalance], payouts: Sequence[Payout] | None = None
+) -> str:
+    """Три копилки: сколько набежало, сколько выплатили, сколько осталось."""
+    lines = ["<b>Касса</b>", ""]
+    for item in balances:
+        lines.append(
+            f"<b>{escape(item.title)}</b> — {format_money(item.balance)}\n"
+            f"накоплено {format_money(item.accrued)}, "
+            f"выплачено {format_money(item.paid)}"
+        )
+    if payouts:
+        lines.append("")
+        lines.append("<b>Последние выплаты</b>")
+        for payout in payouts:
+            stamp = payout.created_at.replace("T", " ")
+            lines.append(
+                f"{stamp} — {escape(payout.title)} {format_money(payout.amount)}"
+            )
+    return "\n\n".join(lines)
 
 
 def render_reports_list(reports: Sequence[ReportBrief], title: str) -> str:

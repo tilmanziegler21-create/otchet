@@ -686,6 +686,8 @@ async def confirm_report(
     city = await db.get_city(city_id) if city_id else None
     salary_kind = city.salary_kind if city else db.SALARY_PERCENT
     salary_value = city.salary_value if city else 0.0
+    expense_kind = city.expense_kind if city else db.EXPENSE_NONE
+    expense_value = city.expense_value if city else 0.0
 
     # Бонус за перевыполнение считаем от кассы месяца до этого отчета.
     day_revenue = sum(revenue for _, _, revenue, _, _ in items)
@@ -707,6 +709,8 @@ async def confirm_report(
         replies=replies,
         purchases=purchases,
         extra_revenue=extra_revenue,
+        expense_kind=expense_kind,
+        expense_value=expense_value,
     )
     summary = build_summary(
         report_date=dates.from_db(report_date),
@@ -722,6 +726,8 @@ async def confirm_report(
         replies=replies,
         purchases=purchases,
         extra_revenue=extra_revenue,
+        expense_kind=expense_kind,
+        expense_value=expense_value,
         report_id=report_id,
         employee_telegram_id=callback.from_user.id,
     )
