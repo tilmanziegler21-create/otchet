@@ -31,6 +31,7 @@ CB_SET_POT = "adm:setpot:"
 CB_PERIOD_CITY = "adm:period_city:"
 CB_PERIOD = "adm:period:"
 CB_REPORTS = "adm:reports"
+CB_REPORTS_PAGE = "adm:rpage:"
 CB_PICK_PREFIX = "adm:pick:"
 CB_REPORT_PREFIX = "adm:report:"
 CB_REPORT_DELETE = "adm:rmask:"
@@ -41,6 +42,23 @@ CB_CLOSE = "adm:close"
 
 ACTION_PRICE_SET = "price_set"
 ACTION_PRICE_EDIT = "price_edit"
+REPORTS_PAGE_SIZE = 20
+
+
+def page_nav(
+    prefix: str, page: int, total: int, page_size: int
+) -> list[list[InlineKeyboardButton]]:
+    """Кнопки «новее / старее», если отчетов больше одной страницы."""
+    buttons: list[InlineKeyboardButton] = []
+    if page > 0:
+        buttons.append(
+            InlineKeyboardButton(text="⬅️ Новее", callback_data=f"{prefix}{page - 1}")
+        )
+    if (page + 1) * page_size < total:
+        buttons.append(
+            InlineKeyboardButton(text="Старее ➡️", callback_data=f"{prefix}{page + 1}")
+        )
+    return [buttons] if buttons else []
 
 
 def admin_menu() -> InlineKeyboardMarkup:
@@ -357,16 +375,25 @@ def confirm_delete_menu(report_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def reports_menu(reports: Sequence[ReportBrief]) -> InlineKeyboardMarkup:
+def reports_menu(
+    reports: Sequence[ReportBrief],
+    page: int = 0,
+    total: int = 0,
+    page_size: int = REPORTS_PAGE_SIZE,
+) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{dates.format_full(report.date)} — "
-                f"{format_money(report.total_revenue)}",
+                text=(
+                    f"{dates.format_full(report.date)}"
+                    + (f" · {report.city_name}" if report.city_name else "")
+                    + f" — {format_money(report.total_revenue)}"
+                ),
                 callback_data=f"{CB_REPORT_PREFIX}{report.id}",
             )
         ]
         for report in reports
     ]
+    rows.extend(page_nav(CB_REPORTS_PAGE, page, total, page_size))
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=CB_MENU)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

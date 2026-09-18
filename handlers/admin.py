@@ -61,6 +61,7 @@ from keyboards.admin import (
     report_card_menu,
     reports_menu,
     salary_kind_menu,
+    REPORTS_PAGE_SIZE,
 )
 from keyboards.employee import BTN_ADMIN_PANEL, cancel_menu
 from services.backup import send_backup
@@ -87,8 +88,6 @@ from utils.access import IsAdmin, IsNotAdmin
 from utils.formatting import format_money, parse_amount
 
 router = Router(name="admin")
-
-REPORTS_LIMIT = 10
 
 MENU_TEXT = (
     "🛠 <b>Админ-панель</b>\n\n"
@@ -763,21 +762,30 @@ async def save_plan_value(message: Message, state: FSMContext) -> None:
 # ------------------------------------------- сводки за неделю и за месяц
 
 
-PERIOD_LABELS = {
-    PERIOD_WEEK: {0: "Текущая неделя", -1: "Прошлая неделя", -2: "Позапрошлая неделя"},
-    PERIOD_MONTH: {0: "Текущий месяц", -1: "Прошлый месяц", -2: "Позапрошлый месяц"},
-}
+PERIOD_DEPTH = {PERIOD_WEEK: 12, PERIOD_MONTH: 12}
 
 
 def _period_buttons(kind: str) -> list[tuple[int, str]]:
-    """Три периода с датами на кнопках: 'Прошлая неделя · 25.08–31.08'."""
+    """12 недель или месяцев назад — чтобы не упираться в три кнопки."""
     buttons = []
-    for offset, label in PERIOD_LABELS[kind].items():
-        start, end = period_bounds(kind, offset)
+    for offset in range(0, -PERIOD_DEPTH[kind], -1):
+        begin, finish = period_bounds(kind, offset)
         if kind == PERIOD_WEEK:
-            period = dates.format_range(start, end)
+            if offset == 0:
+                label = "Текущая неделя"
+            elif offset == -1:
+                label = "Прошлая неделя"
+            else:
+                label = f"{-offset} нед. назад"
+            period = dates.format_range(begin, finish)
         else:
-            period = dates.format_month(dates.month_key(start))
+            if offset == 0:
+                label = "Текущий месяц"
+            elif offset == -1:
+                label = "Прошлый месяц"
+            else:
+                label = f"{-offset} мес. назад"
+            period = dates.format_month(dates.month_key(begin))
         buttons.append((offset, f"{label} · {period}"))
     return buttons
 
@@ -818,7 +826,7 @@ async def cmd_period_denied(message: Message) -> None:
 async def choose_period_city(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     kind = (callback.data or "")[len(CB_PERIOD_CITY) :]
-    if kind not in PERIOD_LABELS:
+    if kind not in PERIOD_DEPTH:
         await callback.answer("Некорректный выбор", show_alert=True)
         return
     await _ask_period_city(callback, kind)
@@ -829,7 +837,7 @@ async def show_period_report(callback: CallbackQuery, state: FSMContext) -> None
     await state.clear()
     kind, _, rest = (callback.data or "")[len(CB_PERIOD) :].partition(":")
     raw_offset, _, raw_city = rest.partition(":")
-    if kind not in PERIOD_LABELS or not raw_city.isdigit():
+    if kind not in PERIOD_DEPTH or not raw_city.isdigit():
         await callback.answer("Некорректный выбор", show_alert=True)
         return
     city = await db.get_city(int(raw_city))
@@ -853,19 +861,22 @@ async def show_period_report(callback: CallbackQuery, state: FSMContext) -> None
 @router.callback_query(F.data == CB_REPORTS, IsAdmin())
 async def show_reports(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    reports = await db.list_reports(limit=REPORTS_LIMIT)
     if callback.message is None:
         await callback.answer()
         return
-    if not reports:
+    total = await db.count_reports()
+    if not total:
         await callback.message.edit_text(
             "Сохраненных отчетов пока нет.", reply_markup=back_menu()
         )
         await callback.answer()
         return
+    reports = await db.list_reports(limit=REPORTS_PAGE_SIZE, offset=0)
     await callback.message.edit_text(
-        render_reports_list(reports, "Последние отчеты"),
-        reply_markup=reports_menu(reports),
+        render_reports_list(
+            reports, "Последние отчеты", page=0, total=total, page_size=REPORTS_PAGE_SIZE
+        ),
+        reply_markup=reports_menu(reports, page=0, total=total),
     )
     await callback.answer()
 

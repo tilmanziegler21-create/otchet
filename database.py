@@ -62,6 +62,7 @@ DEFAULT_CATEGORIES: tuple[tuple[str, float, str], ...] = (
     ("CHASER", 0.0, GROUP_LIQUID),
     ("HQD", 0.0, GROUP_LIQUID),
     ("VOZOL", 0.0, GROUP_LIQUID),
+    ("PUFFY", 0.0, GROUP_LIQUID),
     ("ELFBAR RAYA D3 25.000", 0.0, GROUP_DEVICE),
     ("ELFBAR NIC KING", 0.0, GROUP_DEVICE),
     ("ELFBAR SOUR KING", 0.0, GROUP_DEVICE),
@@ -878,10 +879,24 @@ async def get_reports_between(
         return [await _fetch_report(db, row) for row in rows]
 
 
-async def count_reports() -> int:
-    """Всего отчетов в базе — для подписи к бэкапу."""
+async def count_reports(
+    employee_telegram_id: int | None = None,
+    city_id: int | None = None,
+) -> int:
+    """Всего отчетов — для бэкапа и пагинации списка."""
+    query = "SELECT COUNT(*) FROM daily_reports"
+    conditions: list[str] = []
+    params: list[object] = []
+    if employee_telegram_id is not None:
+        conditions.append("employee_telegram_id = ?")
+        params.append(employee_telegram_id)
+    if city_id is not None:
+        conditions.append("city_id = ?")
+        params.append(city_id)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     async with _connect() as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM daily_reports")
+        cursor = await db.execute(query, params)
         row = await cursor.fetchone()
     return int(row[0]) if row else 0
 

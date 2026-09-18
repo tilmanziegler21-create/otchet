@@ -99,6 +99,7 @@ def _category_blocks(summary: SummaryTotals) -> list[str]:
     )
     parts.append(
         f"Количество покупателей — {summary.customers_count}\n"
+        f"AOV — {format_money(summary.aov)}\n"
         f"UPD — {format_upd(summary.upd)}"
     )
     parts.append(_outreach_block(summary))
@@ -134,13 +135,22 @@ def _outreach_line(summary: SummaryTotals) -> str:
     )
 
 
+def _cash_block(summary: SummaryTotals) -> str:
+    """Касса дня или периода: сумма, клиенты и AOV."""
+    return (
+        f"<b>КАССА — {format_money(summary.total_revenue)}</b>\n\n"
+        f"Клиентов — {summary.customers_count}\n"
+        f"AOV — {format_money(summary.aov)}"
+    )
+
+
 def render_full_report(summary: ReportSummary, employee_label: str | None = None) -> str:
     """Полный финансовый отчет — только для администраторов."""
     parts: list[str] = [f"<b>{_header(summary.report_date, summary.city_name)}</b>"]
     parts.extend(_category_blocks(summary))
 
     rate = format_salary_rate(summary.salary_kind, summary.salary_value)
-    parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
+    parts.append(_cash_block(summary))
     parts.append(
         f"МЕНЕДЖЕРУ ({_percent_label(MANAGER_SHARE)}) — "
         f"{format_money(summary.manager_amount)}"
@@ -206,7 +216,7 @@ def render_period_report(summary: PeriodSummary) -> str:
         )
     parts.append("\n".join(day_lines))
 
-    parts.append(f"<b>ОБЩАЯ ВЫРУЧКА — {format_money(summary.total_revenue)}</b>")
+    parts.append(_cash_block(summary))
     parts.append(
         f"МЕНЕДЖЕРУ ({_percent_label(MANAGER_SHARE)}) — "
         f"{format_money(summary.manager_amount)}"
@@ -265,7 +275,9 @@ def render_employee_result(summary: ReportSummary) -> str:
             "",
             f"Продано жидкостей: {summary.liquid_quantity}",
             f"UPD: {format_upd(summary.upd)}",
-            f"Общая выручка: {format_money(summary.total_revenue)}",
+            f"Касса: {format_money(summary.total_revenue)}",
+            f"Клиентов: {summary.customers_count}",
+            f"AOV: {format_money(summary.aov)}",
             f"Менеджеру ({_percent_label(MANAGER_SHARE)}): "
             f"{format_money(summary.manager_amount)}",
             _outreach_line(summary),
@@ -285,7 +297,8 @@ def render_employee_summary(summary: ReportSummary) -> str:
             f"Продано жидкостей: {summary.liquid_quantity}",
             f"Покупателей: {summary.customers_count}",
             f"UPD: {format_upd(summary.upd)}",
-            f"Общая выручка: {format_money(summary.total_revenue)}",
+            f"Касса: {format_money(summary.total_revenue)}",
+            f"AOV: {format_money(summary.aov)}",
             f"Менеджеру ({_percent_label(MANAGER_SHARE)}): "
             f"{format_money(summary.manager_amount)}",
             _outreach_line(summary),
@@ -424,9 +437,18 @@ def render_pots(
     return "\n\n".join(lines)
 
 
-def render_reports_list(reports: Sequence[ReportBrief], title: str) -> str:
+def render_reports_list(
+    reports: Sequence[ReportBrief],
+    title: str,
+    page: int = 0,
+    total: int | None = None,
+    page_size: int = 0,
+) -> str:
     if not reports:
         return "Сохраненных отчетов пока нет."
+    if total is not None and page_size:
+        pages = max(1, (total + page_size - 1) // page_size)
+        title = f"{title} · {page + 1}/{pages} · всего {total}"
     lines = [f"<b>{escape(title)}</b>", ""]
     for report in reports:
         lines.append(

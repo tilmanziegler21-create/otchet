@@ -267,6 +267,11 @@ class SummaryTotals:
     def upd(self) -> float:
         return calculate_upd(self.liquid_quantity, self.customers_count)
 
+    @property
+    def aov(self) -> float:
+        """Average order value: касса дня / число клиентов."""
+        return calculate_average_check(self.total_revenue, self.customers_count)
+
 
 @dataclass(frozen=True)
 class ReportSummary(SummaryTotals):

@@ -12,6 +12,7 @@ from aiogram.types import (
 )
 
 from database import City, ReportBrief
+from keyboards.admin import REPORTS_PAGE_SIZE, page_nav
 from utils import dates
 
 BTN_NEW_REPORT = "🆕 Новый отчет"
@@ -34,6 +35,7 @@ CB_PICK = "report:pick:id:"
 CB_PICK_DONE = "report:pick:done"
 CB_PICK_NONE = "report:pick:none"
 CB_EMPLOYEE_REPORT = "emp:report:"
+CB_EMP_REPORTS_PAGE = "emp:rpage:"
 
 
 def today_button_text() -> str:
@@ -140,14 +142,23 @@ def edit_menu(names: Sequence[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def employee_reports_menu(reports: Sequence[ReportBrief]) -> InlineKeyboardMarkup:
+def employee_reports_menu(
+    reports: Sequence[ReportBrief],
+    page: int = 0,
+    total: int = 0,
+    page_size: int = REPORTS_PAGE_SIZE,
+) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=dates.format_full(report.date),
+                text=(
+                    dates.format_full(report.date)
+                    + (f" · {report.city_name}" if report.city_name else "")
+                ),
                 callback_data=f"{CB_EMPLOYEE_REPORT}{report.id}",
             )
         ]
         for report in reports
     ]
+    rows.extend(page_nav(CB_EMP_REPORTS_PAGE, page, total, page_size))
     return InlineKeyboardMarkup(inline_keyboard=rows)
